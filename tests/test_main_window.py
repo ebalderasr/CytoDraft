@@ -2,7 +2,7 @@ from pathlib import Path
 
 import numpy as np
 from PySide6.QtGui import QColor
-from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox, QSplitter, QTabWidget
+from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox, QScrollArea, QSplitter, QTabWidget
 
 from cytodraft.gui.main_window import MainWindow
 from cytodraft.models.gate import RangeGate
@@ -253,7 +253,9 @@ def test_main_window_uses_compact_inspector_layout() -> None:
     assert window.inspector_panel.controls_tabs.count() == 2
     assert window.inspector_panel.controls_tabs.tabText(0) == "Gate"
     assert window.inspector_panel.controls_tabs.tabText(1) == "Ajustes de grafica"
-    gate_layout = window.inspector_panel.controls_tabs.widget(0).layout()
+    gate_tab = window.inspector_panel.controls_tabs.widget(0)
+    assert isinstance(gate_tab, QScrollArea)
+    gate_layout = gate_tab.widget().layout()
     assert gate_layout.itemAt(0).widget().title() == "Visualizacion"
     assert gate_layout.itemAt(1).widget().title() == "Gate actions"
     assert gate_layout.itemAt(2).widget().title() == "Scatter gate type"
@@ -308,22 +310,38 @@ def test_view_controls_emit_redraw_without_qt_signature_errors(monkeypatch) -> N
     assert len(redraw_calls) == 3
 
 
-def test_create_gate_button_text_tracks_active_gate_type() -> None:
+def test_create_gate_button_text_stays_generic() -> None:
     get_app()
     window = MainWindow()
     panel = window.inspector_panel
 
     panel.set_plot_mode("scatter")
-    assert panel.create_gate_button.text() == "Create rectangle gate"
+    assert panel.create_gate_button.text() == "Create gate"
 
     panel.circle_gate_button.setChecked(True)
-    assert panel.create_gate_button.text() == "Create circle gate"
+    assert panel.create_gate_button.text() == "Create gate"
 
     panel.polygon_gate_button.setChecked(True)
-    assert panel.create_gate_button.text() == "Create polygon gate"
+    assert panel.create_gate_button.text() == "Create gate"
 
     panel.set_plot_mode("histogram")
-    assert panel.create_gate_button.text() == "Create range gate"
+    assert panel.create_gate_button.text() == "Create gate"
+
+
+def test_create_gate_button_click_creates_scatter_roi() -> None:
+    get_app()
+    window = MainWindow()
+    sample = make_sample("demo.fcs")
+
+    window.current_sample = sample
+    window._update_inspector(sample)
+    window._configure_axis_selectors(sample)
+    window.redraw_current_plot(show_status=False)
+
+    window.inspector_panel.create_gate_button.click()
+
+    assert window.plot_panel._rect_roi is not None
+    assert window.statusBar().currentMessage() == "Gate ROI created. Adjust it and then click Apply gate."
 
 
 def test_export_active_gate_uses_fcs_export_for_fcs_extension(monkeypatch) -> None:

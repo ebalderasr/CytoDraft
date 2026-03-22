@@ -5,6 +5,12 @@ import pyqtgraph as pg
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QSizePolicy, QVBoxLayout, QWidget
 
+ROI_BORDER_COLOR = "#0f766e"
+ROI_HOVER_COLOR = "#f59e0b"
+ROI_HANDLE_COLOR = "#374151"
+ROI_HANDLE_HOVER_COLOR = "#111827"
+ROI_HANDLE_SIZE = 11
+
 
 class CytometryPlotWidget(QWidget):
     """Central plotting area for 1D/2D cytometry views."""
@@ -221,6 +227,12 @@ class CytometryPlotWidget(QWidget):
     def auto_range(self) -> None:
         self.plot_widget.autoRange()
 
+    def _roi_outline_pen(self, color: str = ROI_BORDER_COLOR, *, width: int = 3) -> pg.mkPen:
+        return pg.mkPen(color, width=width)
+
+    def _configure_roi_handles(self, roi: pg.ROI) -> None:
+        roi.handleSize = ROI_HANDLE_SIZE
+
     def create_rectangle_roi(self) -> bool:
         view_range = self.plot_widget.viewRange()
         if not view_range or len(view_range) != 2:
@@ -231,23 +243,27 @@ class CytometryPlotWidget(QWidget):
         if x_max <= x_min or y_max <= y_min:
             return False
 
-        width = (x_max - x_min) * 0.35
-        height = (y_max - y_min) * 0.35
+        width = (x_max - x_min) * 0.42
+        height = (y_max - y_min) * 0.42
 
-        x0 = x_min + (x_max - x_min) * 0.325
-        y0 = y_min + (y_max - y_min) * 0.325
+        x0 = x_min + (x_max - x_min - width) * 0.5
+        y0 = y_min + (y_max - y_min - height) * 0.5
 
         self.clear_all_rois()
 
         roi = pg.RectROI(
             [x0, y0],
             [width, height],
-            pen=pg.mkPen((200, 60, 60), width=2),
+            pen=self._roi_outline_pen(),
+            hoverPen=self._roi_outline_pen(ROI_HOVER_COLOR, width=3),
+            handlePen=self._roi_outline_pen(ROI_HANDLE_COLOR, width=2),
+            handleHoverPen=self._roi_outline_pen(ROI_HANDLE_HOVER_COLOR, width=2),
             movable=True,
             removable=False,
             rotatable=False,
             resizable=True,
         )
+        self._configure_roi_handles(roi)
         roi.addScaleHandle((0, 0), (1, 1))
         roi.addScaleHandle((1, 1), (0, 0))
         roi.addScaleHandle((0, 1), (1, 0))
@@ -268,8 +284,8 @@ class CytometryPlotWidget(QWidget):
 
         cx = x_min + (x_max - x_min) * 0.5
         cy = y_min + (y_max - y_min) * 0.5
-        rx = (x_max - x_min) * 0.18
-        ry = (y_max - y_min) * 0.18
+        rx = (x_max - x_min) * 0.22
+        ry = (y_max - y_min) * 0.22
 
         points = [
             (cx - rx, cy - ry * 0.3),
@@ -284,12 +300,16 @@ class CytometryPlotWidget(QWidget):
         roi = pg.PolyLineROI(
             points,
             closed=True,
-            pen=pg.mkPen((200, 60, 60), width=2),
+            pen=self._roi_outline_pen(),
+            hoverPen=self._roi_outline_pen(ROI_HOVER_COLOR, width=3),
+            handlePen=self._roi_outline_pen(ROI_HANDLE_COLOR, width=2),
+            handleHoverPen=self._roi_outline_pen(ROI_HANDLE_HOVER_COLOR, width=2),
             movable=True,
             removable=False,
             rotatable=False,
             resizable=False,
         )
+        self._configure_roi_handles(roi)
         self.plot_widget.addItem(roi)
         self._poly_roi = roi
         return True
@@ -303,7 +323,7 @@ class CytometryPlotWidget(QWidget):
         if x_max <= x_min or y_max <= y_min:
             return False
 
-        size = min(x_max - x_min, y_max - y_min) * 0.28
+        size = min(x_max - x_min, y_max - y_min) * 0.34
         x0 = x_min + (x_max - x_min - size) * 0.5
         y0 = y_min + (y_max - y_min - size) * 0.5
 
@@ -312,12 +332,16 @@ class CytometryPlotWidget(QWidget):
         roi = pg.CircleROI(
             [x0, y0],
             [size, size],
-            pen=pg.mkPen((200, 60, 60), width=2),
+            pen=self._roi_outline_pen(),
+            hoverPen=self._roi_outline_pen(ROI_HOVER_COLOR, width=3),
+            handlePen=self._roi_outline_pen(ROI_HANDLE_COLOR, width=2),
+            handleHoverPen=self._roi_outline_pen(ROI_HANDLE_HOVER_COLOR, width=2),
             movable=True,
             removable=False,
             rotatable=False,
             resizable=True,
         )
+        self._configure_roi_handles(roi)
         roi.addScaleHandle((1, 0.5), (0, 0.5))
         roi.addScaleHandle((0.5, 1), (0.5, 0))
 
@@ -334,8 +358,8 @@ class CytometryPlotWidget(QWidget):
         if x_max <= x_min:
             return False
 
-        width = (x_max - x_min) * 0.35
-        x0 = x_min + (x_max - x_min) * 0.325
+        width = (x_max - x_min) * 0.42
+        x0 = x_min + (x_max - x_min - width) * 0.5
 
         self.clear_all_rois()
 
@@ -343,8 +367,9 @@ class CytometryPlotWidget(QWidget):
             values=(x0, x0 + width),
             orientation="vertical",
             movable=True,
-            brush=(255, 140, 0, 50),
-            pen=pg.mkPen((200, 60, 60), width=2),
+            brush=QColor(15, 118, 110, 50),
+            pen=self._roi_outline_pen(),
+            hoverPen=self._roi_outline_pen(ROI_HOVER_COLOR, width=3),
         )
         self.plot_widget.addItem(region)
         self._range_region = region
