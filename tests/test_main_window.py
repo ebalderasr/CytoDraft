@@ -2,7 +2,7 @@ from pathlib import Path
 
 import numpy as np
 from PySide6.QtGui import QColor
-from PySide6.QtWidgets import QApplication, QMessageBox, QSplitter, QTabWidget
+from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox, QSplitter, QTabWidget
 
 from cytodraft.gui.main_window import MainWindow
 from cytodraft.models.gate import RangeGate
@@ -251,3 +251,118 @@ def test_main_window_uses_compact_inspector_layout() -> None:
     assert window.inspector_panel.minimumWidth() == 0
     assert isinstance(window.inspector_panel.controls_tabs, QTabWidget)
     assert window.inspector_panel.controls_tabs.count() == 2
+    assert window.inspector_panel.controls_tabs.tabText(0) == "Gate"
+    assert window.inspector_panel.controls_tabs.tabText(1) == "Ajustes de grafica"
+    gate_layout = window.inspector_panel.controls_tabs.widget(0).layout()
+    assert gate_layout.itemAt(0).widget().title() == "Visualizacion"
+    assert gate_layout.itemAt(1).widget().title() == "Gate actions"
+    assert gate_layout.itemAt(2).widget().title() == "Scatter gate type"
+    assert gate_layout.itemAt(3).widget().title() == "Histogram gate type"
+
+
+def test_gate_tab_locks_invalid_gate_types_by_plot_mode() -> None:
+    get_app()
+    window = MainWindow()
+    panel = window.inspector_panel
+
+    panel.set_plot_mode("scatter")
+    assert panel.rectangle_gate_button.isEnabled()
+    assert panel.polygon_gate_button.isEnabled()
+    assert panel.circle_gate_button.isEnabled()
+    assert not panel.histogram_range_button.isEnabled()
+    assert panel.current_scatter_gate_type() == "rectangle"
+
+    panel.set_plot_mode("histogram")
+    assert not panel.rectangle_gate_button.isEnabled()
+    assert not panel.polygon_gate_button.isEnabled()
+    assert not panel.circle_gate_button.isEnabled()
+    assert panel.histogram_range_button.isEnabled()
+    assert panel.histogram_range_button.isChecked()
+
+
+def test_plot_mode_combo_switches_panel_to_histogram() -> None:
+    get_app()
+    window = MainWindow()
+    panel = window.inspector_panel
+
+    panel.plot_mode_combo.setCurrentIndex(1)
+
+    assert panel.current_plot_mode() == "histogram"
+    assert not panel.rectangle_gate_button.isEnabled()
+    assert panel.histogram_range_button.isEnabled()
+
+
+def test_view_controls_emit_redraw_without_qt_signature_errors(monkeypatch) -> None:
+    get_app()
+    window = MainWindow()
+    panel = window.inspector_panel
+    redraw_calls: list[bool] = []
+
+    monkeypatch.setattr(window, "redraw_current_plot", lambda: redraw_calls.append(True))
+
+    panel.x_scale_combo.setCurrentIndex(1)
+    panel.x_min_edit.setText("10")
+    panel.x_min_edit.editingFinished.emit()
+    panel.apply_view_button.click()
+
+    assert len(redraw_calls) == 3
+
+
+def test_create_gate_button_text_tracks_active_gate_type() -> None:
+    get_app()
+    window = MainWindow()
+    panel = window.inspector_panel
+
+    panel.set_plot_mode("scatter")
+    assert panel.create_gate_button.text() == "Create rectangle gate"
+
+    panel.circle_gate_button.setChecked(True)
+    assert panel.create_gate_button.text() == "Create circle gate"
+
+    panel.polygon_gate_button.setChecked(True)
+    assert panel.create_gate_button.text() == "Create polygon gate"
+
+    panel.set_plot_mode("histogram")
+    assert panel.create_gate_button.text() == "Create range gate"
+
+
+def test_export_active_gate_uses_fcs_export_for_fcs_extension(monkeypatch) -> None:
+    get_app()
+    window = MainWindow()
+    sample = make_sample("demo.fcs")
+    gate = RangeGate(
+        name="Gate 1",
+        parent_name="All events",
+        channel_index=0,
+        channel_label="FSC-A",
+        x_min=0.0,
+        x_max=1.0,
+        event_count=2,
+        percentage_parent=50.0,
+        percentage_total=50.0,
+        full_mask=np.array([True, False, True, False]),
+    )
+
+    window.current_sample = sample
+    window.active_gate = gate
+
+    monkeypatch.setattr(
+        QFileDialog,
+        "getSaveFileName",
+        lambda *args, **kwargs: ("gate_export.fcs", "FCS files (*.fcs)"),
+    )
+
+    calls: list[str] = []
+
+    monkeypatch.setattr(
+        "cytodraft.gui.main_window.export_masked_events_to_fcs",
+        lambda *args, **kwargs: calls.append("fcs") or Path("gate_export.fcs"),
+    )
+    monkeypatch.setattr(
+        "cytodraft.gui.main_window.export_masked_events_to_csv",
+        lambda *args, **kwargs: calls.append("csv") or Path("gate_export.csv"),
+    )
+
+    window.on_export_active_gate()
+
+    assert calls == ["fcs"]

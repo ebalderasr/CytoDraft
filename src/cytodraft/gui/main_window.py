@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
     QSplitter,
 )
 
-from cytodraft.core.export import export_masked_events_to_csv
+from cytodraft.core.export import export_masked_events_to_csv, export_masked_events_to_fcs
 from cytodraft.core.fcs_reader import choose_default_axes
 from cytodraft.core.gating import (
     circle_mask_from_parent,
@@ -79,7 +79,7 @@ class MainWindow(QMainWindow):
         self.open_action = QAction("Open FCS...", self)
         self.open_action.setShortcut("Ctrl+O")
 
-        self.export_gate_action = QAction("Export active gate to CSV...", self)
+        self.export_gate_action = QAction("Export active gate...", self)
         self.export_gate_action.setShortcut("Ctrl+E")
 
         self.exit_action = QAction("Exit", self)
@@ -914,9 +914,9 @@ class MainWindow(QMainWindow):
 
         file_path, _ = QFileDialog.getSaveFileName(
             self,
-            "Export active gate to CSV",
+            "Export active gate",
             default_name,
-            "CSV files (*.csv);;All files (*)",
+            "CSV files (*.csv);;FCS files (*.fcs);;All files (*)",
         )
 
         if not file_path:
@@ -924,11 +924,19 @@ class MainWindow(QMainWindow):
             return
 
         try:
-            output_path = export_masked_events_to_csv(
-                self.current_sample,
-                self.active_gate.full_mask,
-                file_path,
-            )
+            suffix = file_path.lower()
+            if suffix.endswith(".fcs"):
+                output_path = export_masked_events_to_fcs(
+                    self.current_sample,
+                    self.active_gate.full_mask,
+                    file_path,
+                )
+            else:
+                output_path = export_masked_events_to_csv(
+                    self.current_sample,
+                    self.active_gate.full_mask,
+                    file_path,
+                )
         except Exception as exc:
             QMessageBox.critical(
                 self,
