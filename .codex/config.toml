@@ -1,0 +1,6 @@
+model = "gpt-5.4"
+model_verbosity = "low"
+approval_policy = "on-request"
+sandbox_mode = "workspace-write"
+project_root_markers = [".git"]
+project_doc_max_bytes = 65536
