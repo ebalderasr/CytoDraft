@@ -26,6 +26,7 @@ class CytometryPlotWidget(QWidget):
         self._highlight_scatter_item: pg.ScatterPlotItem | None = None
         self._hist_item: pg.PlotDataItem | None = None
         self._rect_roi: pg.RectROI | None = None
+        self._poly_roi: pg.PolyLineROI | None = None
         self._range_region: pg.LinearRegionItem | None = None
 
         self.show_placeholder_data()
@@ -36,6 +37,7 @@ class CytometryPlotWidget(QWidget):
         self._highlight_scatter_item = None
         self._hist_item = None
         self._rect_roi = None
+        self._poly_roi = None
         self._range_region = None
 
     def show_placeholder_data(self) -> None:
@@ -50,6 +52,7 @@ class CytometryPlotWidget(QWidget):
         self._highlight_scatter_item = None
         self._hist_item = None
         self._rect_roi = None
+        self._poly_roi = None
         self._range_region = None
         self.plot_widget.setTitle(title)
         self.plot_widget.setLabel("bottom", "")
@@ -87,6 +90,7 @@ class CytometryPlotWidget(QWidget):
 
         self.plot_widget.clear()
         self._rect_roi = None
+        self._poly_roi = None
         self._range_region = None
         self._base_scatter_item = None
         self._highlight_scatter_item = None
@@ -137,6 +141,7 @@ class CytometryPlotWidget(QWidget):
     ) -> tuple[int, int]:
         self.plot_widget.clear()
         self._rect_roi = None
+        self._poly_roi = None
         self._range_region = None
         self._base_scatter_item = None
         self._highlight_scatter_item = None
@@ -221,6 +226,43 @@ class CytometryPlotWidget(QWidget):
         self._rect_roi = roi
         return True
 
+    def create_polygon_roi(self) -> bool:
+        view_range = self.plot_widget.viewRange()
+        if not view_range or len(view_range) != 2:
+            return False
+
+        (x_min, x_max), (y_min, y_max) = view_range
+        if x_max <= x_min or y_max <= y_min:
+            return False
+
+        cx = x_min + (x_max - x_min) * 0.5
+        cy = y_min + (y_max - y_min) * 0.5
+        rx = (x_max - x_min) * 0.18
+        ry = (y_max - y_min) * 0.18
+
+        points = [
+            (cx - rx, cy - ry * 0.3),
+            (cx - rx * 0.25, cy - ry),
+            (cx + rx, cy - ry * 0.2),
+            (cx + rx * 0.65, cy + ry),
+            (cx - rx * 0.85, cy + ry * 0.75),
+        ]
+
+        self.clear_all_rois()
+
+        roi = pg.PolyLineROI(
+            points,
+            closed=True,
+            pen=pg.mkPen((200, 60, 60), width=2),
+            movable=True,
+            removable=False,
+            rotatable=False,
+            resizable=False,
+        )
+        self.plot_widget.addItem(roi)
+        self._poly_roi = roi
+        return True
+
     def create_range_region(self) -> bool:
         view_range = self.plot_widget.viewRange()
         if not view_range or len(view_range) != 2:
@@ -248,12 +290,18 @@ class CytometryPlotWidget(QWidget):
 
     def clear_all_rois(self) -> None:
         self.clear_rectangle_roi()
+        self.clear_polygon_roi()
         self.clear_range_region()
 
     def clear_rectangle_roi(self) -> None:
         if self._rect_roi is not None:
             self.plot_widget.removeItem(self._rect_roi)
             self._rect_roi = None
+
+    def clear_polygon_roi(self) -> None:
+        if self._poly_roi is not None:
+            self.plot_widget.removeItem(self._poly_roi)
+            self._poly_roi = None
 
     def clear_range_region(self) -> None:
         if self._range_region is not None:
@@ -273,6 +321,19 @@ class CytometryPlotWidget(QWidget):
         y_max = float(pos.y() + size.y())
 
         return x_min, x_max, y_min, y_max
+
+    def polygon_roi_points(self) -> list[tuple[float, float]] | None:
+        if self._poly_roi is None:
+            return None
+
+        state = self._poly_roi.saveState()
+        pos_x, pos_y = state["pos"]
+        points = state["points"]
+
+        return [
+            (float(pos_x + px), float(pos_y + py))
+            for px, py in points
+        ]
 
     def range_region_bounds(self) -> tuple[float, float] | None:
         if self._range_region is None:

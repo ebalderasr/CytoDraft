@@ -123,6 +123,10 @@ class InspectorPanel(QWidget):
         self.plot_mode_combo.addItem("Scatter (2D)", "scatter")
         self.plot_mode_combo.addItem("Histogram (1D)", "histogram")
 
+        self.scatter_gate_type_combo = QComboBox()
+        self.scatter_gate_type_combo.addItem("Rectangle", "rectangle")
+        self.scatter_gate_type_combo.addItem("Polygon", "polygon")
+
         self.x_axis_combo = QComboBox()
         self.y_axis_combo = QComboBox()
         self.x_axis_combo.setEnabled(False)
@@ -163,6 +167,7 @@ class InspectorPanel(QWidget):
         plot_controls_box = QGroupBox("Plot controls")
         plot_form = QFormLayout()
         plot_form.addRow("Plot mode:", self.plot_mode_combo)
+        plot_form.addRow("Scatter gate:", self.scatter_gate_type_combo)
         plot_form.addRow("X axis:", self.x_axis_combo)
         plot_form.addRow("Y axis:", self.y_axis_combo)
         plot_form.addRow("X scale:", self.x_scale_combo)
@@ -177,7 +182,7 @@ class InspectorPanel(QWidget):
         plot_form.addRow("Max points:", self.max_points_spin)
         plot_controls_box.setLayout(plot_form)
 
-        self.create_gate_button = QPushButton("Create rectangle gate")
+        self.create_gate_button = QPushButton("Create gate ROI")
         self.apply_gate_button = QPushButton("Apply gate")
         self.clear_gate_button = QPushButton("Clear draft gate")
         self.export_gate_button = QPushButton("Export active gate to CSV")
@@ -194,7 +199,7 @@ class InspectorPanel(QWidget):
         hint_layout = QVBoxLayout()
         hint_layout.addWidget(
             QLabel(
-                "Histogram mode uses a 1D range gate. Scatter mode uses a 2D rectangle gate."
+                "Histogram mode uses a 1D range gate. Scatter mode uses rectangle or polygon gates."
             )
         )
         hint_box.setLayout(hint_layout)
@@ -283,13 +288,16 @@ class InspectorPanel(QWidget):
     def current_plot_mode(self) -> str:
         return str(self.plot_mode_combo.currentData())
 
+    def current_scatter_gate_type(self) -> str:
+        return str(self.scatter_gate_type_combo.currentData())
+
     def set_plot_mode(self, mode: str) -> None:
         if mode == "histogram":
-            self.create_gate_button.setText("Create range gate")
+            self.scatter_gate_type_combo.setEnabled(False)
             self.y_axis_combo.setEnabled(False)
             self.y_scale_combo.setEnabled(False)
         else:
-            self.create_gate_button.setText("Create rectangle gate")
+            self.scatter_gate_type_combo.setEnabled(True)
             self.y_axis_combo.setEnabled(self.y_axis_combo.count() >= 2)
             self.y_scale_combo.setEnabled(True)
 
