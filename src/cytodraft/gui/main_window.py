@@ -7,7 +7,7 @@ from PySide6.QtWidgets import QFileDialog, QMainWindow, QMessageBox, QSplitter
 
 from cytodraft.core.export import export_masked_events_to_csv
 from cytodraft.core.fcs_reader import choose_default_axes
-from cytodraft.core.gating import rectangle_mask
+from cytodraft.core.gating import rectangle_mask_from_parent
 from cytodraft.gui.panels import InspectorPanel, SamplePanel
 from cytodraft.gui.plot_widget import CytometryPlotWidget
 from cytodraft.models.gate import RectangleGate
@@ -26,7 +26,6 @@ class MainWindow(QMainWindow):
         self.current_sample: SampleData | None = None
         self.gates: list[RectangleGate] = []
         self.active_gate: RectangleGate | None = None
-        self.active_gate_mask: np.ndarray | None = None
 
         self.sample_panel = SamplePanel()
         self.plot_panel = CytometryPlotWidget()
@@ -80,6 +79,7 @@ class MainWindow(QMainWindow):
         self.exit_action.triggered.connect(self.close)
         self.about_action.triggered.connect(self.show_about_dialog)
         self.sample_panel.add_sample_button.clicked.connect(self.open_fcs_dialog)
+        self.sample_panel.gate_selection_changed.connect(self.on_gate_selection_changed)
         self.inspector_panel.axes_changed.connect(self.on_axes_changed)
         self.inspector_panel.sampling_changed.connect(self.on_sampling_changed)
         self.inspector_panel.create_rectangle_gate_requested.connect(self.on_create_rectangle_gate)
@@ -116,10 +116,9 @@ class MainWindow(QMainWindow):
         self.current_sample = sample
         self.gates = []
         self.active_gate = None
-        self.active_gate_mask = None
 
         self.sample_panel.add_sample(sample.file_name)
-        self.sample_panel.clear_gates()
+        self.sample_panel.reset_gates()
 
         self._update_inspector(sample)
         self._configure_axis_selectors(sample)
@@ -135,7 +134,7 @@ class MainWindow(QMainWindow):
             file_name=sample.file_name,
             events=str(sample.event_count),
             channels=str(sample.channel_count),
-            active_gate="None",
+            active_gate="All events",
         )
         self.inspector_panel.set_displayed_points(None, None)
 
@@ -159,18 +158,19 @@ class MainWindow(QMainWindow):
 
         self.plot_axes(x_idx, y_idx)
 
-    def _selected_mask_for_axes(self, x_idx: int, y_idx: int) -> np.ndarray | None:
-        if self.active_gate is None or self.active_gate_mask is None:
+    def current_population_mask(self) -> np.ndarray | None:
+        if self.current_sample is None:
             return None
 
-        same_axes = (
-            self.active_gate.x_channel_index == x_idx
-            and self.active_gate.y_channel_index == y_idx
-        )
-        if not same_axes:
-            return None
+        if self.active_gate is None:
+            return np.ones(self.current_sample.event_count, dtype=bool)
 
-        return self.active_gate_mask
+        return self.active_gate.full_mask
+
+    def current_population_name(self) -> str:
+        if self.active_gate is None:
+            return "All events"
+        return self.active_gate.name
 
     def plot_axes(self, x_idx: int, y_idx: int, *, show_status: bool = True) -> None:
         if self.current_sample is None:
@@ -183,24 +183,27 @@ class MainWindow(QMainWindow):
         if x_idx >= sample.channel_count or y_idx >= sample.channel_count:
             return
 
-        x = sample.events[:, x_idx]
-        y = sample.events[:, y_idx]
+        population_mask = self.current_population_mask()
+        if population_mask is None:
+            return
+
+        x = sample.events[population_mask, x_idx]
+        y = sample.events[population_mask, y_idx]
 
         x_label = sample.channel_label(x_idx)
         y_label = sample.channel_label(y_idx)
 
         limit_enabled, max_points = self.inspector_panel.sampling_settings()
         display_limit = max_points if limit_enabled else None
-        selected_mask = self._selected_mask_for_axes(x_idx, y_idx)
 
         displayed_count, total_count = self.plot_panel.plot_scatter(
             x,
             y,
             x_label,
             y_label,
-            title=f"{sample.file_name} | {y_label} vs {x_label}",
+            title=f"{sample.file_name} | {self.current_population_name()} | {y_label} vs {x_label}",
             max_points=display_limit,
-            selected_mask=selected_mask,
+            selected_mask=None,
         )
 
         self.inspector_panel.set_displayed_points(displayed_count, total_count)
@@ -208,7 +211,7 @@ class MainWindow(QMainWindow):
         if show_status:
             suffix = f"{displayed_count:,}/{total_count:,} displayed"
             self.statusBar().showMessage(
-                f"Viewing {sample.file_name} | X: {x_label} | Y: {y_label} | {suffix}",
+                f"Population: {self.current_population_name()} | X: {x_label} | Y: {y_label} | {suffix}",
                 4000,
             )
 
@@ -220,6 +223,33 @@ class MainWindow(QMainWindow):
         x_idx, y_idx = self.inspector_panel.current_axes()
         self.plot_axes(x_idx, y_idx)
 
+    def on_gate_selection_changed(self, row: int) -> None:
+        if self.current_sample is None:
+            return
+
+        self.plot_panel.clear_rectangle_roi()
+
+        if row <= 0:
+            self.active_gate = None
+            self.inspector_panel.set_active_gate("All events")
+        else:
+            gate_index = row - 1
+            if gate_index >= len(self.gates):
+                return
+            self.active_gate = self.gates[gate_index]
+            self.inspector_panel.set_active_gate(self.active_gate.name)
+
+        x_idx, y_idx = self.inspector_panel.current_axes()
+        self.plot_axes(x_idx, y_idx, show_status=False)
+
+        if self.active_gate is None:
+            self.statusBar().showMessage("Focused on All events", 4000)
+        else:
+            self.statusBar().showMessage(
+                f"Focused on {self.active_gate.name}: {self.active_gate.event_count:,} events",
+                4000,
+            )
+
     def on_create_rectangle_gate(self) -> None:
         if self.current_sample is None:
             self.statusBar().showMessage("Load an FCS file before creating a gate", 4000)
@@ -230,7 +260,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("Could not create rectangle gate on the current plot", 4000)
             return
 
-        self.inspector_panel.set_active_gate("Draft rectangle")
+        self.inspector_panel.set_active_gate(f"Draft on {self.current_population_name()}")
         self.statusBar().showMessage(
             "Rectangle gate created. Resize and move it, then click Apply gate.",
             5000,
@@ -249,26 +279,40 @@ class MainWindow(QMainWindow):
         x_idx, y_idx = self.inspector_panel.current_axes()
         sample = self.current_sample
 
+        parent_mask = self.current_population_mask()
+        if parent_mask is None:
+            self.statusBar().showMessage("No active population available", 4000)
+            return
+
+        parent_count = int(parent_mask.sum())
+        if parent_count == 0:
+            self.statusBar().showMessage("The active population is empty", 4000)
+            return
+
         x = sample.events[:, x_idx]
         y = sample.events[:, y_idx]
 
         x_min, x_max, y_min, y_max = bounds
-        mask = rectangle_mask(
+        full_mask = rectangle_mask_from_parent(
             x,
             y,
+            parent_mask,
             x_min=x_min,
             x_max=x_max,
             y_min=y_min,
             y_max=y_max,
         )
 
-        event_count = int(mask.sum())
-        total = len(mask)
-        percentage_total = (event_count / total * 100.0) if total else 0.0
+        event_count = int(full_mask.sum())
+        total_count = sample.event_count
+
+        percentage_parent = (event_count / parent_count * 100.0) if parent_count else 0.0
+        percentage_total = (event_count / total_count * 100.0) if total_count else 0.0
 
         gate_name = f"Gate {len(self.gates) + 1}"
         gate = RectangleGate(
             name=gate_name,
+            parent_name=self.current_population_name(),
             x_channel_index=x_idx,
             y_channel_index=y_idx,
             x_label=sample.channel_label(x_idx),
@@ -278,27 +322,26 @@ class MainWindow(QMainWindow):
             y_min=min(y_min, y_max),
             y_max=max(y_min, y_max),
             event_count=event_count,
+            percentage_parent=percentage_parent,
             percentage_total=percentage_total,
+            full_mask=full_mask,
         )
 
         self.gates.append(gate)
-        self.active_gate = gate
-        self.active_gate_mask = mask
+        self.sample_panel.add_gate(gate.label, select=False)
 
-        self.sample_panel.add_gate(gate.label)
-        self.inspector_panel.set_active_gate(gate.name)
-
-        self.plot_axes(x_idx, y_idx, show_status=False)
+        new_row = len(self.gates)  # row 0 = All events
+        self.sample_panel.select_gate_row(new_row)
 
         self.statusBar().showMessage(
-            f"Applied {gate.name}: {event_count:,} / {total:,} events ({percentage_total:.2f}%)",
+            f"Applied {gate.name} on {gate.parent_name}: "
+            f"{event_count:,} events ({percentage_parent:.2f}% parent, {percentage_total:.2f}% total)",
             6000,
         )
 
     def on_clear_draft_gate(self) -> None:
         self.plot_panel.clear_rectangle_roi()
-        if self.active_gate is None:
-            self.inspector_panel.set_active_gate("None")
+        self.inspector_panel.set_active_gate(self.current_population_name())
         self.statusBar().showMessage("Draft rectangle gate cleared", 4000)
 
     def on_export_active_gate(self) -> None:
@@ -306,8 +349,8 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("No sample loaded", 4000)
             return
 
-        if self.active_gate is None or self.active_gate_mask is None:
-            self.statusBar().showMessage("Apply a gate before exporting", 4000)
+        if self.active_gate is None:
+            self.statusBar().showMessage("Select a gate before exporting", 4000)
             return
 
         default_name = (
@@ -329,7 +372,7 @@ class MainWindow(QMainWindow):
         try:
             output_path = export_masked_events_to_csv(
                 self.current_sample,
-                self.active_gate_mask,
+                self.active_gate.full_mask,
                 file_path,
             )
         except Exception as exc:
@@ -353,6 +396,6 @@ class MainWindow(QMainWindow):
             (
                 "CytoDraft\n\n"
                 "Open-source desktop application for cytometry data analysis.\n"
-                "Current stage: local FCS loading + metadata + interactive rectangle gates."
+                "Current stage: local FCS loading + hierarchical rectangle gating."
             ),
         )

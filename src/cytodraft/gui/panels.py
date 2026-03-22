@@ -18,6 +18,8 @@ from PySide6.QtWidgets import (
 class SamplePanel(QWidget):
     """Left panel: loaded samples and gate list."""
 
+    gate_selection_changed = Signal(int)
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
 
@@ -38,7 +40,7 @@ class SamplePanel(QWidget):
         sample_layout.addWidget(self.remove_sample_button)
         sample_box.setLayout(sample_layout)
 
-        gate_box = QGroupBox("Gates")
+        gate_box = QGroupBox("Gates / populations")
         gate_layout = QVBoxLayout()
         gate_layout.addWidget(self.gate_list)
         gate_box.setLayout(gate_layout)
@@ -49,17 +51,27 @@ class SamplePanel(QWidget):
         self.setLayout(layout)
 
         self.sample_list.currentRowChanged.connect(self._on_sample_selection_changed)
+        self.gate_list.currentRowChanged.connect(self.gate_selection_changed.emit)
+
+        self.reset_gates()
 
     def add_sample(self, name: str) -> None:
         self.sample_list.addItem(name)
         self.sample_list.setCurrentRow(self.sample_list.count() - 1)
 
-    def add_gate(self, label: str) -> None:
-        self.gate_list.addItem(label)
-        self.gate_list.setCurrentRow(self.gate_list.count() - 1)
-
-    def clear_gates(self) -> None:
+    def reset_gates(self) -> None:
         self.gate_list.clear()
+        self.gate_list.addItem("All events")
+        self.gate_list.setCurrentRow(0)
+
+    def add_gate(self, label: str, *, select: bool = True) -> None:
+        self.gate_list.addItem(label)
+        if select:
+            self.gate_list.setCurrentRow(self.gate_list.count() - 1)
+
+    def select_gate_row(self, row: int) -> None:
+        if 0 <= row < self.gate_list.count():
+            self.gate_list.setCurrentRow(row)
 
     def _on_sample_selection_changed(self, row: int) -> None:
         self.remove_sample_button.setEnabled(row >= 0)
@@ -98,7 +110,7 @@ class InspectorPanel(QWidget):
         info_form.addRow("File:", self.file_label)
         info_form.addRow("Events:", self.events_label)
         info_form.addRow("Channels:", self.channels_label)
-        info_form.addRow("Active gate:", self.active_gate_label)
+        info_form.addRow("Active population:", self.active_gate_label)
         info_form.addRow("Displayed:", self.displayed_points_label)
         info_box.setLayout(info_form)
 
@@ -140,7 +152,7 @@ class InspectorPanel(QWidget):
         hint_layout = QVBoxLayout()
         hint_layout.addWidget(
             QLabel(
-                "Downsampling only affects display. Gates are applied to the full loaded dataset."
+                "If you select a gate from the left panel, the plot focuses on that population and new gates are applied within it."
             )
         )
         hint_box.setLayout(hint_layout)

@@ -1,6 +1,6 @@
 import numpy as np
 
-from cytodraft.core.gating import rectangle_mask
+from cytodraft.core.gating import rectangle_mask, rectangle_mask_from_parent
 
 
 def test_rectangle_mask_selects_points_inside_bounds() -> None:
@@ -33,3 +33,21 @@ def test_rectangle_mask_sorts_inverted_bounds() -> None:
     )
 
     assert mask.tolist() == [False, True, True]
+
+
+def test_rectangle_mask_from_parent_only_selects_within_parent() -> None:
+    x = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
+    y = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
+    parent_mask = np.array([False, True, True, False, True])
+
+    child_mask = rectangle_mask_from_parent(
+        x,
+        y,
+        parent_mask,
+        x_min=2.5,
+        x_max=5.5,
+        y_min=2.5,
+        y_max=5.5,
+    )
+
+    assert child_mask.tolist() == [False, False, True, False, True]
