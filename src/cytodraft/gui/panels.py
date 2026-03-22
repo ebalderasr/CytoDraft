@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QSizePolicy,
     QSpinBox,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -250,7 +251,7 @@ class InspectorPanel(QWidget):
         self.auto_range_button = QPushButton("Reset zoom")
         self.auto_range_button.setProperty("variant", "subtle")
 
-        plot_controls_box = QGroupBox("Plot controls")
+        plot_controls_box = QGroupBox("View")
         plot_form = QFormLayout()
         plot_form.addRow("Plot mode:", self.plot_mode_combo)
         plot_form.addRow("Scatter gate:", gate_button_row)
@@ -281,7 +282,7 @@ class InspectorPanel(QWidget):
         self.gate_color_button = QPushButton("Gate color")
         self.gate_color_button.setProperty("variant", "subtle")
 
-        gate_controls_box = QGroupBox("Gate controls")
+        gate_controls_box = QGroupBox("Gate")
         gate_layout = QVBoxLayout()
         gate_form = QFormLayout()
         gate_form.addRow("Gate name:", self.gate_name_edit)
@@ -293,22 +294,21 @@ class InspectorPanel(QWidget):
         gate_layout.addWidget(self.export_gate_button)
         gate_controls_box.setLayout(gate_layout)
 
-        hint_box = QGroupBox("Notes")
-        hint_layout = QVBoxLayout()
-        hint_layout.addWidget(
-            QLabel(
-                "Histogram mode uses a 1D range gate. Scatter mode uses rectangle or polygon gates."
-            )
+        self.mode_hint_label = QLabel(
+            "Scatter: rectangle, polygon or circle. Histogram: 1D range gate."
         )
-        hint_box.setLayout(hint_layout)
+        self.mode_hint_label.setWordWrap(True)
+
+        self.controls_tabs = QTabWidget()
+        self.controls_tabs.addTab(plot_controls_box, "View")
+        self.controls_tabs.addTab(gate_controls_box, "Gate")
 
         layout = QVBoxLayout()
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(14)
+        layout.setSpacing(10)
         layout.addWidget(info_box)
-        layout.addWidget(plot_controls_box)
-        layout.addWidget(gate_controls_box)
-        layout.addWidget(hint_box)
+        layout.addWidget(self.controls_tabs, stretch=1)
+        layout.addWidget(self.mode_hint_label)
         layout.addStretch(1)
         self.setLayout(layout)
 

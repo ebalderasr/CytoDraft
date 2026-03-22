@@ -29,6 +29,29 @@ QGroupBox::title {
     color: #4b5563;
 }
 
+QTabWidget::pane {
+    border: 1px solid #d9e2ec;
+    border-radius: 12px;
+    background: #ffffff;
+    top: -1px;
+}
+
+QTabBar::tab {
+    background: #e7edf5;
+    color: #475569;
+    border: 1px solid #d9e2ec;
+    padding: 8px 14px;
+    border-top-left-radius: 10px;
+    border-top-right-radius: 10px;
+    margin-right: 6px;
+}
+
+QTabBar::tab:selected {
+    background: #ffffff;
+    color: #0f172a;
+    border-bottom-color: #ffffff;
+}
+
 QLabel {
     background: transparent;
 }

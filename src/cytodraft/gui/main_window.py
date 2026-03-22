@@ -9,7 +9,6 @@ from PySide6.QtWidgets import (
     QInputDialog,
     QMainWindow,
     QMessageBox,
-    QScrollArea,
     QSplitter,
 )
 
@@ -41,6 +40,7 @@ class MainWindow(QMainWindow):
 
         self.setWindowTitle("CytoDraft")
         self.resize(1400, 850)
+        self.setMinimumSize(960, 680)
 
         self.sample_service = SampleService()
         self.current_sample: SampleData | None = None
@@ -57,14 +57,11 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Ready")
 
     def _build_ui(self) -> None:
-        sample_scroll = self._make_side_scroll(self.sample_panel)
-        inspector_scroll = self._make_side_scroll(self.inspector_panel)
-
         splitter = QSplitter(Qt.Horizontal)
         splitter.setChildrenCollapsible(False)
-        splitter.addWidget(sample_scroll)
+        splitter.addWidget(self.sample_panel)
         splitter.addWidget(self.plot_panel)
-        splitter.addWidget(inspector_scroll)
+        splitter.addWidget(self.inspector_panel)
 
         splitter.setStretchFactor(0, 2)
         splitter.setStretchFactor(1, 7)
@@ -73,14 +70,6 @@ class MainWindow(QMainWindow):
 
         self.setCentralWidget(splitter)
         self._create_menu()
-
-    def _make_side_scroll(self, widget) -> QScrollArea:
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        scroll.setWidget(widget)
-        return scroll
 
     def _create_menu(self) -> None:
         menu_bar = self.menuBar()
