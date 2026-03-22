@@ -24,7 +24,9 @@ class CytometryPlotWidget(QWidget):
 
         self._base_scatter_item: pg.ScatterPlotItem | None = None
         self._highlight_scatter_item: pg.ScatterPlotItem | None = None
+        self._hist_item: pg.PlotDataItem | None = None
         self._rect_roi: pg.RectROI | None = None
+        self._range_region: pg.LinearRegionItem | None = None
 
         self.show_placeholder_data()
 
@@ -32,7 +34,9 @@ class CytometryPlotWidget(QWidget):
         self.plot_widget.clear()
         self._base_scatter_item = None
         self._highlight_scatter_item = None
+        self._hist_item = None
         self._rect_roi = None
+        self._range_region = None
 
     def show_placeholder_data(self) -> None:
         rng = np.random.default_rng(42)
@@ -44,7 +48,9 @@ class CytometryPlotWidget(QWidget):
         self.plot_widget.clear()
         self._base_scatter_item = None
         self._highlight_scatter_item = None
+        self._hist_item = None
         self._rect_roi = None
+        self._range_region = None
         self.plot_widget.setTitle(title)
         self.plot_widget.setLabel("bottom", "")
         self.plot_widget.setLabel("left", "")
@@ -81,8 +87,10 @@ class CytometryPlotWidget(QWidget):
 
         self.plot_widget.clear()
         self._rect_roi = None
+        self._range_region = None
         self._base_scatter_item = None
         self._highlight_scatter_item = None
+        self._hist_item = None
 
         self.plot_widget.setLabel("bottom", x_label)
         self.plot_widget.setLabel("left", y_label)
@@ -115,6 +123,47 @@ class CytometryPlotWidget(QWidget):
                     brush=(255, 140, 0, 180),
                 )
                 self.plot_widget.addItem(self._highlight_scatter_item)
+
+        self.plot_widget.enableAutoRange()
+        return displayed_count, total_count
+
+    def plot_histogram(
+        self,
+        values: np.ndarray,
+        x_label: str,
+        *,
+        title: str | None = None,
+        bins: int = 128,
+    ) -> tuple[int, int]:
+        self.plot_widget.clear()
+        self._rect_roi = None
+        self._range_region = None
+        self._base_scatter_item = None
+        self._highlight_scatter_item = None
+        self._hist_item = None
+
+        total_count = len(values)
+        displayed_count = total_count
+
+        if total_count == 0:
+            self.show_empty_message("Histogram: no plottable events")
+            return 0, 0
+
+        bin_count = min(bins, max(16, int(np.sqrt(total_count))))
+        counts, edges = np.histogram(values, bins=bin_count)
+
+        self.plot_widget.setLabel("bottom", x_label)
+        self.plot_widget.setLabel("left", "Count")
+        self.plot_widget.setTitle(title or f"{x_label} histogram")
+
+        self._hist_item = self.plot_widget.plot(
+            edges,
+            counts,
+            stepMode="center",
+            fillLevel=0,
+            brush=(70, 110, 190, 100),
+            pen=pg.mkPen((70, 110, 190), width=1),
+        )
 
         self.plot_widget.enableAutoRange()
         return displayed_count, total_count
@@ -152,7 +201,7 @@ class CytometryPlotWidget(QWidget):
         x0 = x_min + (x_max - x_min) * 0.325
         y0 = y_min + (y_max - y_min) * 0.325
 
-        self.clear_rectangle_roi()
+        self.clear_all_rois()
 
         roi = pg.RectROI(
             [x0, y0],
@@ -172,13 +221,44 @@ class CytometryPlotWidget(QWidget):
         self._rect_roi = roi
         return True
 
+    def create_range_region(self) -> bool:
+        view_range = self.plot_widget.viewRange()
+        if not view_range or len(view_range) != 2:
+            return False
+
+        (x_min, x_max), _ = view_range
+        if x_max <= x_min:
+            return False
+
+        width = (x_max - x_min) * 0.35
+        x0 = x_min + (x_max - x_min) * 0.325
+
+        self.clear_all_rois()
+
+        region = pg.LinearRegionItem(
+            values=(x0, x0 + width),
+            orientation="vertical",
+            movable=True,
+            brush=(255, 140, 0, 50),
+            pen=pg.mkPen((200, 60, 60), width=2),
+        )
+        self.plot_widget.addItem(region)
+        self._range_region = region
+        return True
+
+    def clear_all_rois(self) -> None:
+        self.clear_rectangle_roi()
+        self.clear_range_region()
+
     def clear_rectangle_roi(self) -> None:
         if self._rect_roi is not None:
             self.plot_widget.removeItem(self._rect_roi)
             self._rect_roi = None
 
-    def has_rectangle_roi(self) -> bool:
-        return self._rect_roi is not None
+    def clear_range_region(self) -> None:
+        if self._range_region is not None:
+            self.plot_widget.removeItem(self._range_region)
+            self._range_region = None
 
     def rectangle_roi_bounds(self) -> tuple[float, float, float, float] | None:
         if self._rect_roi is None:
@@ -193,3 +273,10 @@ class CytometryPlotWidget(QWidget):
         y_max = float(pos.y() + size.y())
 
         return x_min, x_max, y_min, y_max
+
+    def range_region_bounds(self) -> tuple[float, float] | None:
+        if self._range_region is None:
+            return None
+
+        x_min, x_max = self._range_region.getRegion()
+        return float(x_min), float(x_max)

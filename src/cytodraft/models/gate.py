@@ -28,3 +28,24 @@ class RectangleGate:
             f"{self.name} | {self.event_count:,} events "
             f"({self.percentage_parent:.2f}% parent, {self.percentage_total:.2f}% total)"
         )
+
+
+@dataclass(slots=True)
+class RangeGate:
+    name: str
+    parent_name: str
+    channel_index: int
+    channel_label: str
+    x_min: float
+    x_max: float
+    event_count: int
+    percentage_parent: float
+    percentage_total: float
+    full_mask: np.ndarray
+
+    @property
+    def label(self) -> str:
+        return (
+            f"{self.name} | {self.event_count:,} events "
+            f"({self.percentage_parent:.2f}% parent, {self.percentage_total:.2f}% total)"
+        )

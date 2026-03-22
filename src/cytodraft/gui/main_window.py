@@ -7,11 +7,11 @@ from PySide6.QtWidgets import QFileDialog, QMainWindow, QMessageBox, QSplitter
 
 from cytodraft.core.export import export_masked_events_to_csv
 from cytodraft.core.fcs_reader import choose_default_axes
-from cytodraft.core.gating import rectangle_mask_from_parent
+from cytodraft.core.gating import rectangle_mask_from_parent, range_mask_from_parent
 from cytodraft.core.transforms import apply_scale, axis_label
 from cytodraft.gui.panels import InspectorPanel, SamplePanel
 from cytodraft.gui.plot_widget import CytometryPlotWidget
-from cytodraft.models.gate import RectangleGate
+from cytodraft.models.gate import RangeGate, RectangleGate
 from cytodraft.models.sample import SampleData
 from cytodraft.services.sample_service import SampleService
 
@@ -25,8 +25,8 @@ class MainWindow(QMainWindow):
 
         self.sample_service = SampleService()
         self.current_sample: SampleData | None = None
-        self.gates: list[RectangleGate] = []
-        self.active_gate: RectangleGate | None = None
+        self.gates: list[RectangleGate | RangeGate] = []
+        self.active_gate: RectangleGate | RangeGate | None = None
 
         self.sample_panel = SamplePanel()
         self.plot_panel = CytometryPlotWidget()
@@ -82,10 +82,11 @@ class MainWindow(QMainWindow):
         self.sample_panel.add_sample_button.clicked.connect(self.open_fcs_dialog)
         self.sample_panel.gate_selection_changed.connect(self.on_gate_selection_changed)
         self.inspector_panel.axes_changed.connect(self.on_axes_changed)
+        self.inspector_panel.plot_mode_changed.connect(self.on_plot_mode_changed)
         self.inspector_panel.sampling_changed.connect(self.on_sampling_changed)
         self.inspector_panel.view_settings_changed.connect(self.on_view_settings_changed)
         self.inspector_panel.auto_range_requested.connect(self.on_auto_range_requested)
-        self.inspector_panel.create_rectangle_gate_requested.connect(self.on_create_rectangle_gate)
+        self.inspector_panel.create_gate_requested.connect(self.on_create_gate)
         self.inspector_panel.apply_gate_requested.connect(self.on_apply_gate)
         self.inspector_panel.clear_gate_requested.connect(self.on_clear_draft_gate)
         self.inspector_panel.export_gate_requested.connect(self.on_export_active_gate)
@@ -125,7 +126,7 @@ class MainWindow(QMainWindow):
 
         self._update_inspector(sample)
         self._configure_axis_selectors(sample)
-        self._plot_default_view(sample)
+        self.redraw_current_plot()
 
         self.statusBar().showMessage(
             f"Loaded {sample.file_name} | {sample.event_count} events | {sample.channel_count} channels",
@@ -147,19 +148,9 @@ class MainWindow(QMainWindow):
         try:
             x_idx, y_idx = choose_default_axes(sample)
         except ValueError:
-            self.inspector_panel.clear_channels()
-            return
+            x_idx, y_idx = 0, 0
 
         self.inspector_panel.set_channels(channel_names, x_index=x_idx, y_index=y_idx)
-
-    def _plot_default_view(self, sample: SampleData) -> None:
-        try:
-            x_idx, y_idx = choose_default_axes(sample)
-        except ValueError:
-            self.plot_panel.show_empty_message("Sample has fewer than two channels")
-            return
-
-        self.plot_axes(x_idx, y_idx)
 
     def current_population_mask(self) -> np.ndarray | None:
         if self.current_sample is None:
@@ -175,12 +166,23 @@ class MainWindow(QMainWindow):
             return "All events"
         return self.active_gate.name
 
-    def plot_axes(self, x_idx: int, y_idx: int, *, show_status: bool = True) -> None:
+    def redraw_current_plot(self, *, show_status: bool = True) -> None:
+        if self.current_sample is None:
+            return
+
+        mode = self.inspector_panel.current_plot_mode()
+        x_idx, y_idx = self.inspector_panel.current_axes()
+
+        if mode == "histogram":
+            self.plot_histogram(x_idx, show_status=show_status)
+        else:
+            self.plot_scatter(x_idx, y_idx, show_status=show_status)
+
+    def plot_scatter(self, x_idx: int, y_idx: int, *, show_status: bool = True) -> None:
         if self.current_sample is None:
             return
 
         sample = self.current_sample
-
         if x_idx < 0 or y_idx < 0:
             return
         if x_idx >= sample.channel_count or y_idx >= sample.channel_count:
@@ -209,10 +211,7 @@ class MainWindow(QMainWindow):
             self.plot_panel.show_empty_message("No plottable events under current axis scales")
             self.inspector_panel.set_displayed_points(0, int(population_mask.sum()))
             if show_status:
-                self.statusBar().showMessage(
-                    "No plottable events under current axis scales",
-                    4000,
-                )
+                self.statusBar().showMessage("No plottable events under current axis scales", 4000)
             return
 
         limit_enabled, max_points = self.inspector_panel.sampling_settings()
@@ -244,32 +243,87 @@ class MainWindow(QMainWindow):
         if show_status:
             suffix = f"{displayed_count:,}/{total_count:,} displayed"
             self.statusBar().showMessage(
-                f"Population: {self.current_population_name()} | X: {x_label} | Y: {y_label} | {suffix}",
+                f"Population: {self.current_population_name()} | Scatter | X: {x_label} | Y: {y_label} | {suffix}",
+                4000,
+            )
+
+    def plot_histogram(self, x_idx: int, *, show_status: bool = True) -> None:
+        if self.current_sample is None:
+            return
+
+        sample = self.current_sample
+        if x_idx < 0 or x_idx >= sample.channel_count:
+            return
+
+        population_mask = self.current_population_mask()
+        if population_mask is None:
+            return
+
+        raw_x = sample.events[population_mask, x_idx]
+        x_scale, _ = self.inspector_panel.current_scales()
+        x = apply_scale(raw_x, x_scale)
+        x = x[np.isfinite(x)]
+
+        x_label = axis_label(sample.channel_label(x_idx), x_scale)
+
+        if len(x) == 0:
+            self.plot_panel.show_empty_message("No plottable events under current axis scales")
+            self.inspector_panel.set_displayed_points(0, int(population_mask.sum()))
+            if show_status:
+                self.statusBar().showMessage("No plottable events under current axis scales", 4000)
+            return
+
+        displayed_count, total_count = self.plot_panel.plot_histogram(
+            x,
+            x_label,
+            title=f"{sample.file_name} | {self.current_population_name()} | Histogram of {x_label}",
+        )
+
+        x_min, x_max, y_min, y_max = self.inspector_panel.current_view_limits()
+        if any(v is not None for v in (x_min, x_max, y_min, y_max)):
+            self.plot_panel.set_manual_ranges(
+                x_min=x_min,
+                x_max=x_max,
+                y_min=y_min,
+                y_max=y_max,
+            )
+        else:
+            self.plot_panel.auto_range()
+
+        self.inspector_panel.set_displayed_points(displayed_count, total_count)
+
+        if show_status:
+            suffix = f"{displayed_count:,}/{total_count:,} displayed"
+            self.statusBar().showMessage(
+                f"Population: {self.current_population_name()} | Histogram | Channel: {x_label} | {suffix}",
                 4000,
             )
 
     def on_axes_changed(self, x_idx: int, y_idx: int) -> None:
-        self.plot_axes(x_idx, y_idx)
+        del x_idx, y_idx
+        self.redraw_current_plot()
+
+    def on_plot_mode_changed(self, mode: str) -> None:
+        self.plot_panel.clear_all_rois()
+        self.redraw_current_plot()
+        self.statusBar().showMessage(f"Plot mode set to {mode}", 3000)
 
     def on_sampling_changed(self, enabled: bool, max_points: int) -> None:
         del enabled, max_points
-        x_idx, y_idx = self.inspector_panel.current_axes()
-        self.plot_axes(x_idx, y_idx)
+        self.redraw_current_plot()
 
     def on_view_settings_changed(self) -> None:
-        x_idx, y_idx = self.inspector_panel.current_axes()
-        self.plot_axes(x_idx, y_idx)
+        self.redraw_current_plot()
 
     def on_auto_range_requested(self) -> None:
         self.inspector_panel.clear_view_limits()
-        x_idx, y_idx = self.inspector_panel.current_axes()
-        self.plot_axes(x_idx, y_idx)
+        self.redraw_current_plot()
 
     def on_gate_selection_changed(self, row: int) -> None:
         if self.current_sample is None:
             return
 
-        self.plot_panel.clear_rectangle_roi()
+        self.plot_panel.clear_all_rois()
 
         if row <= 0:
             self.active_gate = None
@@ -281,8 +335,7 @@ class MainWindow(QMainWindow):
             self.active_gate = self.gates[gate_index]
             self.inspector_panel.set_active_gate(self.active_gate.name)
 
-        x_idx, y_idx = self.inspector_panel.current_axes()
-        self.plot_axes(x_idx, y_idx, show_status=False)
+        self.redraw_current_plot(show_status=False)
 
         if self.active_gate is None:
             self.statusBar().showMessage("Focused on All events", 4000)
@@ -292,25 +345,42 @@ class MainWindow(QMainWindow):
                 4000,
             )
 
-    def on_create_rectangle_gate(self) -> None:
+    def on_create_gate(self) -> None:
         if self.current_sample is None:
             self.statusBar().showMessage("Load an FCS file before creating a gate", 4000)
             return
 
-        created = self.plot_panel.create_rectangle_roi()
+        mode = self.inspector_panel.current_plot_mode()
+        if mode == "histogram":
+            created = self.plot_panel.create_range_region()
+            draft_name = f"Draft range on {self.current_population_name()}"
+        else:
+            created = self.plot_panel.create_rectangle_roi()
+            draft_name = f"Draft rectangle on {self.current_population_name()}"
+
         if not created:
-            self.statusBar().showMessage("Could not create rectangle gate on the current plot", 4000)
+            self.statusBar().showMessage("Could not create gate on the current plot", 4000)
             return
 
-        self.inspector_panel.set_active_gate(f"Draft on {self.current_population_name()}")
+        self.inspector_panel.set_active_gate(draft_name)
         self.statusBar().showMessage(
-            "Rectangle gate created. Resize and move it, then click Apply gate.",
+            "Gate ROI created. Adjust it and then click Apply gate.",
             5000,
         )
 
     def on_apply_gate(self) -> None:
         if self.current_sample is None:
             self.statusBar().showMessage("No sample loaded", 4000)
+            return
+
+        mode = self.inspector_panel.current_plot_mode()
+        if mode == "histogram":
+            self._apply_range_gate()
+        else:
+            self._apply_rectangle_gate()
+
+    def _apply_rectangle_gate(self) -> None:
+        if self.current_sample is None:
             return
 
         bounds = self.plot_panel.rectangle_roi_bounds()
@@ -332,7 +402,6 @@ class MainWindow(QMainWindow):
             return
 
         x_scale, y_scale = self.inspector_panel.current_scales()
-
         x = apply_scale(sample.events[:, x_idx], x_scale)
         y = apply_scale(sample.events[:, y_idx], y_scale)
 
@@ -349,7 +418,6 @@ class MainWindow(QMainWindow):
 
         event_count = int(full_mask.sum())
         total_count = sample.event_count
-
         percentage_parent = (event_count / parent_count * 100.0) if parent_count else 0.0
         percentage_total = (event_count / total_count * 100.0) if total_count else 0.0
 
@@ -371,22 +439,82 @@ class MainWindow(QMainWindow):
             full_mask=full_mask,
         )
 
-        self.gates.append(gate)
-        self.sample_panel.add_gate(gate.label, select=False)
-
-        new_row = len(self.gates)
-        self.sample_panel.select_gate_row(new_row)
-
+        self._store_and_select_new_gate(gate)
         self.statusBar().showMessage(
             f"Applied {gate.name} on {gate.parent_name}: "
             f"{event_count:,} events ({percentage_parent:.2f}% parent, {percentage_total:.2f}% total)",
             6000,
         )
 
+    def _apply_range_gate(self) -> None:
+        if self.current_sample is None:
+            return
+
+        bounds = self.plot_panel.range_region_bounds()
+        if bounds is None:
+            self.statusBar().showMessage("Create a range gate first", 4000)
+            return
+
+        x_idx, _ = self.inspector_panel.current_axes()
+        sample = self.current_sample
+
+        parent_mask = self.current_population_mask()
+        if parent_mask is None:
+            self.statusBar().showMessage("No active population available", 4000)
+            return
+
+        parent_count = int(parent_mask.sum())
+        if parent_count == 0:
+            self.statusBar().showMessage("The active population is empty", 4000)
+            return
+
+        x_scale, _ = self.inspector_panel.current_scales()
+        x = apply_scale(sample.events[:, x_idx], x_scale)
+
+        x_min, x_max = bounds
+        full_mask = range_mask_from_parent(
+            x,
+            parent_mask,
+            x_min=x_min,
+            x_max=x_max,
+        )
+
+        event_count = int(full_mask.sum())
+        total_count = sample.event_count
+        percentage_parent = (event_count / parent_count * 100.0) if parent_count else 0.0
+        percentage_total = (event_count / total_count * 100.0) if total_count else 0.0
+
+        gate_name = f"Gate {len(self.gates) + 1}"
+        gate = RangeGate(
+            name=gate_name,
+            parent_name=self.current_population_name(),
+            channel_index=x_idx,
+            channel_label=sample.channel_label(x_idx),
+            x_min=min(x_min, x_max),
+            x_max=max(x_min, x_max),
+            event_count=event_count,
+            percentage_parent=percentage_parent,
+            percentage_total=percentage_total,
+            full_mask=full_mask,
+        )
+
+        self._store_and_select_new_gate(gate)
+        self.statusBar().showMessage(
+            f"Applied {gate.name} on {gate.parent_name}: "
+            f"{event_count:,} events ({percentage_parent:.2f}% parent, {percentage_total:.2f}% total)",
+            6000,
+        )
+
+    def _store_and_select_new_gate(self, gate: RectangleGate | RangeGate) -> None:
+        self.gates.append(gate)
+        self.sample_panel.add_gate(gate.label, select=False)
+        new_row = len(self.gates)
+        self.sample_panel.select_gate_row(new_row)
+
     def on_clear_draft_gate(self) -> None:
-        self.plot_panel.clear_rectangle_roi()
+        self.plot_panel.clear_all_rois()
         self.inspector_panel.set_active_gate(self.current_population_name())
-        self.statusBar().showMessage("Draft rectangle gate cleared", 4000)
+        self.statusBar().showMessage("Draft gate cleared", 4000)
 
     def on_export_active_gate(self) -> None:
         if self.current_sample is None:
@@ -440,6 +568,6 @@ class MainWindow(QMainWindow):
             (
                 "CytoDraft\n\n"
                 "Open-source desktop application for cytometry data analysis.\n"
-                "Current stage: local FCS loading + hierarchical rectangle gating + axis view controls."
+                "Current stage: scatter/histogram plotting + hierarchical rectangle/range gating."
             ),
         )

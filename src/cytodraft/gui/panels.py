@@ -83,10 +83,11 @@ class InspectorPanel(QWidget):
     """Right panel: metadata and plot controls."""
 
     axes_changed = Signal(int, int)
+    plot_mode_changed = Signal(str)
     sampling_changed = Signal(bool, int)
     view_settings_changed = Signal()
     auto_range_requested = Signal()
-    create_rectangle_gate_requested = Signal()
+    create_gate_requested = Signal()
     apply_gate_requested = Signal()
     clear_gate_requested = Signal()
     export_gate_requested = Signal()
@@ -117,6 +118,10 @@ class InspectorPanel(QWidget):
         info_form.addRow("Active population:", self.active_gate_label)
         info_form.addRow("Displayed:", self.displayed_points_label)
         info_box.setLayout(info_form)
+
+        self.plot_mode_combo = QComboBox()
+        self.plot_mode_combo.addItem("Scatter (2D)", "scatter")
+        self.plot_mode_combo.addItem("Histogram (1D)", "histogram")
 
         self.x_axis_combo = QComboBox()
         self.y_axis_combo = QComboBox()
@@ -157,6 +162,7 @@ class InspectorPanel(QWidget):
 
         plot_controls_box = QGroupBox("Plot controls")
         plot_form = QFormLayout()
+        plot_form.addRow("Plot mode:", self.plot_mode_combo)
         plot_form.addRow("X axis:", self.x_axis_combo)
         plot_form.addRow("Y axis:", self.y_axis_combo)
         plot_form.addRow("X scale:", self.x_scale_combo)
@@ -171,14 +177,14 @@ class InspectorPanel(QWidget):
         plot_form.addRow("Max points:", self.max_points_spin)
         plot_controls_box.setLayout(plot_form)
 
-        self.create_rect_gate_button = QPushButton("Create rectangle gate")
+        self.create_gate_button = QPushButton("Create rectangle gate")
         self.apply_gate_button = QPushButton("Apply gate")
         self.clear_gate_button = QPushButton("Clear draft gate")
         self.export_gate_button = QPushButton("Export active gate to CSV")
 
         gate_controls_box = QGroupBox("Gate controls")
         gate_layout = QVBoxLayout()
-        gate_layout.addWidget(self.create_rect_gate_button)
+        gate_layout.addWidget(self.create_gate_button)
         gate_layout.addWidget(self.apply_gate_button)
         gate_layout.addWidget(self.clear_gate_button)
         gate_layout.addWidget(self.export_gate_button)
@@ -188,7 +194,7 @@ class InspectorPanel(QWidget):
         hint_layout = QVBoxLayout()
         hint_layout.addWidget(
             QLabel(
-                "Scales and limits apply to the displayed coordinate system. New gates are computed in the same displayed space."
+                "Histogram mode uses a 1D range gate. Scatter mode uses a 2D rectangle gate."
             )
         )
         hint_box.setLayout(hint_layout)
@@ -201,6 +207,7 @@ class InspectorPanel(QWidget):
         layout.addStretch(1)
         self.setLayout(layout)
 
+        self.plot_mode_combo.currentIndexChanged.connect(self._emit_plot_mode_changed)
         self.x_axis_combo.currentIndexChanged.connect(self._emit_axes_changed)
         self.y_axis_combo.currentIndexChanged.connect(self._emit_axes_changed)
         self.x_scale_combo.currentIndexChanged.connect(self.view_settings_changed.emit)
@@ -211,10 +218,12 @@ class InspectorPanel(QWidget):
         self.apply_view_button.clicked.connect(self.view_settings_changed.emit)
         self.auto_range_button.clicked.connect(self.auto_range_requested.emit)
 
-        self.create_rect_gate_button.clicked.connect(self.create_rectangle_gate_requested.emit)
+        self.create_gate_button.clicked.connect(self.create_gate_requested.emit)
         self.apply_gate_button.clicked.connect(self.apply_gate_requested.emit)
         self.clear_gate_button.clicked.connect(self.clear_gate_requested.emit)
         self.export_gate_button.clicked.connect(self.export_gate_requested.emit)
+
+        self.set_plot_mode("scatter")
 
     def set_file_info(
         self,
@@ -246,9 +255,9 @@ class InspectorPanel(QWidget):
             self.x_axis_combo.addItems(channel_names)
             self.y_axis_combo.addItems(channel_names)
 
-            has_channels = len(channel_names) >= 2
+            has_channels = len(channel_names) >= 1
             self.x_axis_combo.setEnabled(has_channels)
-            self.y_axis_combo.setEnabled(has_channels)
+            self.y_axis_combo.setEnabled(len(channel_names) >= 2)
 
             if not has_channels:
                 return
@@ -270,6 +279,19 @@ class InspectorPanel(QWidget):
 
     def current_axes(self) -> tuple[int, int]:
         return self.x_axis_combo.currentIndex(), self.y_axis_combo.currentIndex()
+
+    def current_plot_mode(self) -> str:
+        return str(self.plot_mode_combo.currentData())
+
+    def set_plot_mode(self, mode: str) -> None:
+        if mode == "histogram":
+            self.create_gate_button.setText("Create range gate")
+            self.y_axis_combo.setEnabled(False)
+            self.y_scale_combo.setEnabled(False)
+        else:
+            self.create_gate_button.setText("Create rectangle gate")
+            self.y_axis_combo.setEnabled(self.y_axis_combo.count() >= 2)
+            self.y_scale_combo.setEnabled(True)
 
     def current_scales(self) -> tuple[str, str]:
         x_mode = str(self.x_scale_combo.currentData())
@@ -303,10 +325,22 @@ class InspectorPanel(QWidget):
         x_index = self.x_axis_combo.currentIndex()
         y_index = self.y_axis_combo.currentIndex()
 
-        if x_index < 0 or y_index < 0:
+        if x_index < 0:
+            return
+
+        if self.current_plot_mode() == "histogram":
+            self.axes_changed.emit(x_index, y_index)
+            return
+
+        if y_index < 0:
             return
 
         self.axes_changed.emit(x_index, y_index)
+
+    def _emit_plot_mode_changed(self) -> None:
+        mode = self.current_plot_mode()
+        self.set_plot_mode(mode)
+        self.plot_mode_changed.emit(mode)
 
     def _emit_sampling_changed(self) -> None:
         self.sampling_changed.emit(

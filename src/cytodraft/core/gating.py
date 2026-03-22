@@ -51,3 +51,41 @@ def rectangle_mask_from_parent(
 
     full_mask[parent_indices[child_mask_within_parent]] = True
     return full_mask
+
+
+def range_mask(
+    x: np.ndarray,
+    *,
+    x_min: float,
+    x_max: float,
+) -> np.ndarray:
+    low, high = sorted((x_min, x_max))
+    return (x >= low) & (x <= high)
+
+
+def range_mask_from_parent(
+    x: np.ndarray,
+    parent_mask: np.ndarray,
+    *,
+    x_min: float,
+    x_max: float,
+) -> np.ndarray:
+    if len(x) != len(parent_mask):
+        raise ValueError("x and parent_mask must have the same length.")
+
+    full_mask = np.zeros(len(parent_mask), dtype=bool)
+
+    if not np.any(parent_mask):
+        return full_mask
+
+    parent_indices = np.flatnonzero(parent_mask)
+    x_parent = x[parent_mask]
+
+    child_mask_within_parent = range_mask(
+        x_parent,
+        x_min=x_min,
+        x_max=x_max,
+    )
+
+    full_mask[parent_indices[child_mask_within_parent]] = True
+    return full_mask
