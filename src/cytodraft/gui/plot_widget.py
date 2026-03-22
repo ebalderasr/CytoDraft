@@ -23,11 +23,14 @@ class CytometryPlotWidget(QWidget):
         self.setLayout(layout)
 
         self._scatter_item: pg.ScatterPlotItem | None = None
+        self._rect_roi: pg.RectROI | None = None
+
         self.show_placeholder_data()
 
     def clear_plot(self) -> None:
         self.plot_widget.clear()
         self._scatter_item = None
+        self._rect_roi = None
 
     def show_placeholder_data(self) -> None:
         rng = np.random.default_rng(42)
@@ -37,6 +40,8 @@ class CytometryPlotWidget(QWidget):
 
     def show_empty_message(self, title: str = "No data loaded") -> None:
         self.plot_widget.clear()
+        self._scatter_item = None
+        self._rect_roi = None
         self.plot_widget.setTitle(title)
         self.plot_widget.setLabel("bottom", "")
         self.plot_widget.setLabel("left", "")
@@ -69,6 +74,8 @@ class CytometryPlotWidget(QWidget):
         x_plot, y_plot, displayed_count, total_count = self._downsample(x, y, max_points)
 
         self.plot_widget.clear()
+        self._rect_roi = None
+
         self.plot_widget.setLabel("bottom", x_label)
         self.plot_widget.setLabel("left", y_label)
 
@@ -88,3 +95,61 @@ class CytometryPlotWidget(QWidget):
         self.plot_widget.enableAutoRange()
 
         return displayed_count, total_count
+
+    def create_rectangle_roi(self) -> bool:
+        view_range = self.plot_widget.viewRange()
+        if not view_range or len(view_range) != 2:
+            return False
+
+        (x_min, x_max), (y_min, y_max) = view_range
+
+        if x_max <= x_min or y_max <= y_min:
+            return False
+
+        width = (x_max - x_min) * 0.35
+        height = (y_max - y_min) * 0.35
+
+        x0 = x_min + (x_max - x_min) * 0.325
+        y0 = y_min + (y_max - y_min) * 0.325
+
+        self.clear_rectangle_roi()
+
+        roi = pg.RectROI(
+            [x0, y0],
+            [width, height],
+            pen=pg.mkPen((200, 60, 60), width=2),
+            movable=True,
+            removable=False,
+            rotatable=False,
+            resizable=True,
+        )
+        roi.addScaleHandle((0, 0), (1, 1))
+        roi.addScaleHandle((1, 1), (0, 0))
+        roi.addScaleHandle((0, 1), (1, 0))
+        roi.addScaleHandle((1, 0), (0, 1))
+
+        self.plot_widget.addItem(roi)
+        self._rect_roi = roi
+        return True
+
+    def clear_rectangle_roi(self) -> None:
+        if self._rect_roi is not None:
+            self.plot_widget.removeItem(self._rect_roi)
+            self._rect_roi = None
+
+    def has_rectangle_roi(self) -> bool:
+        return self._rect_roi is not None
+
+    def rectangle_roi_bounds(self) -> tuple[float, float, float, float] | None:
+        if self._rect_roi is None:
+            return None
+
+        pos = self._rect_roi.pos()
+        size = self._rect_roi.size()
+
+        x_min = float(pos.x())
+        y_min = float(pos.y())
+        x_max = float(pos.x() + size.x())
+        y_max = float(pos.y() + size.y())
+
+        return x_min, x_max, y_min, y_max

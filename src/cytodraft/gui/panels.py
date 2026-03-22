@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
 
 
 class SamplePanel(QWidget):
-    """Left panel: loaded samples and gate tree placeholder."""
+    """Left panel: loaded samples and gate list."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -54,6 +54,13 @@ class SamplePanel(QWidget):
         self.sample_list.addItem(name)
         self.sample_list.setCurrentRow(self.sample_list.count() - 1)
 
+    def add_gate(self, label: str) -> None:
+        self.gate_list.addItem(label)
+        self.gate_list.setCurrentRow(self.gate_list.count() - 1)
+
+    def clear_gates(self) -> None:
+        self.gate_list.clear()
+
     def _on_sample_selection_changed(self, row: int) -> None:
         self.remove_sample_button.setEnabled(row >= 0)
 
@@ -63,6 +70,9 @@ class InspectorPanel(QWidget):
 
     axes_changed = Signal(int, int)
     sampling_changed = Signal(bool, int)
+    create_rectangle_gate_requested = Signal()
+    apply_gate_requested = Signal()
+    clear_gate_requested = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -112,16 +122,30 @@ class InspectorPanel(QWidget):
         plot_form.addRow("Max points:", self.max_points_spin)
         plot_controls_box.setLayout(plot_form)
 
+        self.create_rect_gate_button = QPushButton("Create rectangle gate")
+        self.apply_gate_button = QPushButton("Apply gate")
+        self.clear_gate_button = QPushButton("Clear draft gate")
+
+        gate_controls_box = QGroupBox("Gate controls")
+        gate_layout = QVBoxLayout()
+        gate_layout.addWidget(self.create_rect_gate_button)
+        gate_layout.addWidget(self.apply_gate_button)
+        gate_layout.addWidget(self.clear_gate_button)
+        gate_controls_box.setLayout(gate_layout)
+
         hint_box = QGroupBox("Notes")
         hint_layout = QVBoxLayout()
         hint_layout.addWidget(
-            QLabel("Use the axis selectors to inspect channels. Downsampling only affects display, not the stored data.")
+            QLabel(
+                "Downsampling only affects display. Gates are applied to the full loaded dataset."
+            )
         )
         hint_box.setLayout(hint_layout)
 
         layout = QVBoxLayout()
         layout.addWidget(info_box)
         layout.addWidget(plot_controls_box)
+        layout.addWidget(gate_controls_box)
         layout.addWidget(hint_box)
         layout.addStretch(1)
         self.setLayout(layout)
@@ -130,6 +154,10 @@ class InspectorPanel(QWidget):
         self.y_axis_combo.currentIndexChanged.connect(self._emit_axes_changed)
         self.limit_points_checkbox.toggled.connect(self._emit_sampling_changed)
         self.max_points_spin.valueChanged.connect(self._emit_sampling_changed)
+
+        self.create_rect_gate_button.clicked.connect(self.create_rectangle_gate_requested.emit)
+        self.apply_gate_button.clicked.connect(self.apply_gate_requested.emit)
+        self.clear_gate_button.clicked.connect(self.clear_gate_requested.emit)
 
     def set_file_info(
         self,
@@ -143,6 +171,9 @@ class InspectorPanel(QWidget):
         self.events_label.setText(events)
         self.channels_label.setText(channels)
         self.active_gate_label.setText(active_gate)
+
+    def set_active_gate(self, gate_name: str) -> None:
+        self.active_gate_label.setText(gate_name)
 
     def set_channels(
         self,

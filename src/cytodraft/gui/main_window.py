@@ -5,8 +5,10 @@ from PySide6.QtGui import QAction
 from PySide6.QtWidgets import QFileDialog, QMainWindow, QMessageBox, QSplitter
 
 from cytodraft.core.fcs_reader import choose_default_axes
+from cytodraft.core.gating import rectangle_mask
 from cytodraft.gui.panels import InspectorPanel, SamplePanel
 from cytodraft.gui.plot_widget import CytometryPlotWidget
+from cytodraft.models.gate import RectangleGate
 from cytodraft.models.sample import SampleData
 from cytodraft.services.sample_service import SampleService
 
@@ -20,6 +22,7 @@ class MainWindow(QMainWindow):
 
         self.sample_service = SampleService()
         self.current_sample: SampleData | None = None
+        self.gates: list[RectangleGate] = []
 
         self.sample_panel = SamplePanel()
         self.plot_panel = CytometryPlotWidget()
@@ -70,6 +73,9 @@ class MainWindow(QMainWindow):
         self.sample_panel.add_sample_button.clicked.connect(self.open_fcs_dialog)
         self.inspector_panel.axes_changed.connect(self.on_axes_changed)
         self.inspector_panel.sampling_changed.connect(self.on_sampling_changed)
+        self.inspector_panel.create_rectangle_gate_requested.connect(self.on_create_rectangle_gate)
+        self.inspector_panel.apply_gate_requested.connect(self.on_apply_gate)
+        self.inspector_panel.clear_gate_requested.connect(self.on_clear_draft_gate)
 
     def open_fcs_dialog(self) -> None:
         file_path, _ = QFileDialog.getOpenFileName(
@@ -98,7 +104,11 @@ class MainWindow(QMainWindow):
             return
 
         self.current_sample = sample
+        self.gates = []
+
         self.sample_panel.add_sample(sample.file_name)
+        self.sample_panel.clear_gates()
+
         self._update_inspector(sample)
         self._configure_axis_selectors(sample)
         self._plot_default_view(sample)
@@ -176,11 +186,84 @@ class MainWindow(QMainWindow):
 
     def on_axes_changed(self, x_idx: int, y_idx: int) -> None:
         self.plot_axes(x_idx, y_idx)
+        self.inspector_panel.set_active_gate("None")
 
     def on_sampling_changed(self, enabled: bool, max_points: int) -> None:
         del enabled, max_points
         x_idx, y_idx = self.inspector_panel.current_axes()
         self.plot_axes(x_idx, y_idx)
+
+    def on_create_rectangle_gate(self) -> None:
+        if self.current_sample is None:
+            self.statusBar().showMessage("Load an FCS file before creating a gate", 4000)
+            return
+
+        created = self.plot_panel.create_rectangle_roi()
+        if not created:
+            self.statusBar().showMessage("Could not create rectangle gate on the current plot", 4000)
+            return
+
+        self.inspector_panel.set_active_gate("Draft rectangle")
+        self.statusBar().showMessage("Rectangle gate created. Resize and move it, then click Apply gate.", 5000)
+
+    def on_apply_gate(self) -> None:
+        if self.current_sample is None:
+            self.statusBar().showMessage("No sample loaded", 4000)
+            return
+
+        bounds = self.plot_panel.rectangle_roi_bounds()
+        if bounds is None:
+            self.statusBar().showMessage("Create a rectangle gate first", 4000)
+            return
+
+        x_idx, y_idx = self.inspector_panel.current_axes()
+        sample = self.current_sample
+
+        x = sample.events[:, x_idx]
+        y = sample.events[:, y_idx]
+
+        x_min, x_max, y_min, y_max = bounds
+        mask = rectangle_mask(
+            x,
+            y,
+            x_min=x_min,
+            x_max=x_max,
+            y_min=y_min,
+            y_max=y_max,
+        )
+
+        event_count = int(mask.sum())
+        total = len(mask)
+        percentage_total = (event_count / total * 100.0) if total else 0.0
+
+        gate_name = f"Gate {len(self.gates) + 1}"
+        gate = RectangleGate(
+            name=gate_name,
+            x_channel_index=x_idx,
+            y_channel_index=y_idx,
+            x_label=sample.channel_label(x_idx),
+            y_label=sample.channel_label(y_idx),
+            x_min=min(x_min, x_max),
+            x_max=max(x_min, x_max),
+            y_min=min(y_min, y_max),
+            y_max=max(y_min, y_max),
+            event_count=event_count,
+            percentage_total=percentage_total,
+        )
+
+        self.gates.append(gate)
+        self.sample_panel.add_gate(gate.label)
+        self.inspector_panel.set_active_gate(gate.name)
+
+        self.statusBar().showMessage(
+            f"Applied {gate.name}: {event_count:,} / {total:,} events ({percentage_total:.2f}%)",
+            6000,
+        )
+
+    def on_clear_draft_gate(self) -> None:
+        self.plot_panel.clear_rectangle_roi()
+        self.inspector_panel.set_active_gate("None")
+        self.statusBar().showMessage("Draft rectangle gate cleared", 4000)
 
     def show_about_dialog(self) -> None:
         QMessageBox.about(
@@ -189,6 +272,6 @@ class MainWindow(QMainWindow):
             (
                 "CytoDraft\n\n"
                 "Open-source desktop application for cytometry data analysis.\n"
-                "Current stage: local FCS loading + metadata + interactive axis selection."
+                "Current stage: local FCS loading + metadata + interactive rectangle gates."
             ),
         )
