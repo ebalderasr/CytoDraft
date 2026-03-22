@@ -45,6 +45,7 @@ from cytodraft.models.workspace import (
     DEFAULT_GROUP_NAME,
     WorkspaceSample,
     WorkspaceState,
+    COMPENSATION_GROUP_NAME,
 )
 from cytodraft.services.gate_service import GateService
 from cytodraft.services.sample_service import SampleService
@@ -77,6 +78,7 @@ class MainWindow(QMainWindow):
 
         self._build_ui()
         self._connect_signals()
+        self._refresh_group_list()
 
         self.statusBar().showMessage("Ready")
 
@@ -130,6 +132,7 @@ class MainWindow(QMainWindow):
         self.sample_panel.recolor_group_requested.connect(self.on_recolor_group)
         self.sample_panel.annotate_group_requested.connect(self.on_annotate_group)
         self.sample_panel.sample_selection_changed.connect(self.on_sample_selection_changed)
+        self.sample_panel.edit_compensation_sample_requested.connect(self.on_edit_compensation_sample)
         self.sample_panel.assign_sample_group_requested.connect(self.on_assign_sample_group)
         self.sample_panel.assign_custom_sample_group_requested.connect(self.on_assign_custom_sample_group)
         self.sample_panel.apply_active_gate_to_group_requested.connect(self.on_apply_active_gate_to_group)
@@ -216,7 +219,7 @@ class MainWindow(QMainWindow):
         with QSignalBlocker(self.sample_panel.sample_list):
             self.sample_panel.reset_samples()
             for workspace_index, workspace_sample in self.workspace.samples_in_group(self.selected_group_name):
-                self.sample_panel.add_sample(workspace_sample.sample.file_name, workspace_index)
+                self.sample_panel.add_sample(workspace_sample.display_name, workspace_index)
             if select_active and active_index is not None:
                 for row in range(self.sample_panel.sample_list.count()):
                     item = self.sample_panel.sample_list.item(row)
@@ -243,6 +246,22 @@ class MainWindow(QMainWindow):
             return
         group = self.workspace.groups.get(self.selected_group_name)
         self.sample_panel.set_group_notes("" if group is None else group.notes)
+
+    def _refresh_sample_details(self) -> None:
+        sample_index = self.sample_panel.current_sample_workspace_index()
+        if sample_index is None or sample_index < 0 or sample_index >= len(self.workspace.samples):
+            self.sample_panel.set_sample_details("")
+            return
+
+        workspace_sample = self.workspace.samples[sample_index]
+        if workspace_sample.group_name == COMPENSATION_GROUP_NAME:
+            details = workspace_sample.compensation.summary
+            if workspace_sample.compensation.notes:
+                details = f"{details} | {workspace_sample.compensation.notes}"
+            self.sample_panel.set_sample_details(details)
+            return
+
+        self.sample_panel.set_sample_details(f"Group: {workspace_sample.group_name}")
 
     def _refresh_gate_panel(self) -> None:
         with QSignalBlocker(self.sample_panel.gate_list):
@@ -471,7 +490,7 @@ class MainWindow(QMainWindow):
         self.gates = []
         self.active_gate = None
 
-        self.sample_panel.reset_groups()
+        self._refresh_group_list()
         self.sample_panel.reset_samples()
         self.sample_panel.reset_gates()
         self._update_population_context_labels()
@@ -504,8 +523,10 @@ class MainWindow(QMainWindow):
 
     def on_sample_selection_changed(self, row: int) -> None:
         if row < 0:
+            self._refresh_sample_details()
             return
         if row >= len(self.workspace.samples):
+            self._refresh_sample_details()
             return
 
         self.workspace.active_sample_index = row
@@ -513,6 +534,7 @@ class MainWindow(QMainWindow):
         self._clear_statistics_results()
         self._refresh_gate_panel()
         self._show_active_sample()
+        self._refresh_sample_details()
         if self.current_sample is not None:
             self.statusBar().showMessage(f"Focused on {self.current_sample.file_name}", 4000)
 
@@ -521,6 +543,7 @@ class MainWindow(QMainWindow):
         self.selected_group_name = resolved_group_name
         self._refresh_group_notes()
         self._refresh_sample_list(select_active=True)
+        self._refresh_sample_details()
 
     def on_rename_group(self, group_name: str) -> None:
         group = self.workspace.groups.get(group_name)
@@ -578,6 +601,84 @@ class MainWindow(QMainWindow):
         group.notes = notes.strip()
         self._refresh_group_list()
         self.statusBar().showMessage(f"Updated annotations for {group.name}", 4000)
+
+    def on_edit_compensation_sample(self, sample_index: int) -> None:
+        if sample_index < 0 or sample_index >= len(self.workspace.samples):
+            return
+
+        workspace_sample = self.workspace.samples[sample_index]
+        if workspace_sample.group_name != COMPENSATION_GROUP_NAME:
+            self.statusBar().showMessage(
+                "Compensation details are only available for samples in the Compensation group",
+                5000,
+            )
+            return
+
+        control_options = [
+            "Single stain",
+            "Unstained",
+            "Autofluorescence",
+            "FMO",
+            "Beads",
+        ]
+        current_control_label = workspace_sample.compensation.control_type.replace("_", " ").title()
+        if current_control_label not in control_options:
+            control_options.append(current_control_label)
+        selected_control, accepted = QInputDialog.getItem(
+            self,
+            "Compensation control type",
+            "Control type:",
+            control_options,
+            current=control_options.index(current_control_label),
+            editable=False,
+        )
+        if not accepted:
+            return
+
+        fluorochrome, accepted = QInputDialog.getText(
+            self,
+            "Compensation fluorochrome",
+            "Fluorochrome:",
+            text=workspace_sample.compensation.fluorochrome,
+        )
+        if not accepted:
+            return
+
+        channel_names = [channel.display_name for channel in workspace_sample.sample.channels]
+        if workspace_sample.compensation.target_channel and workspace_sample.compensation.target_channel not in channel_names:
+            channel_names.append(workspace_sample.compensation.target_channel)
+        selected_channel, accepted = QInputDialog.getItem(
+            self,
+            "Compensation target channel",
+            "Target channel:",
+            channel_names,
+            current=channel_names.index(workspace_sample.compensation.target_channel)
+            if workspace_sample.compensation.target_channel in channel_names
+            else 0,
+            editable=False,
+        )
+        if not accepted:
+            return
+
+        notes, accepted = QInputDialog.getMultiLineText(
+            self,
+            "Compensation notes",
+            "Notes:",
+            text=workspace_sample.compensation.notes,
+        )
+        if not accepted:
+            return
+
+        workspace_sample.compensation.control_type = selected_control.lower().replace(" ", "_")
+        workspace_sample.compensation.fluorochrome = fluorochrome.strip()
+        workspace_sample.compensation.target_channel = selected_channel.strip()
+        workspace_sample.compensation.notes = notes.strip()
+        self._refresh_sample_list(select_active=True)
+        self._refresh_sample_details()
+        self.statusBar().showMessage(
+            f"Updated compensation metadata for {workspace_sample.sample.file_name}",
+            5000,
+        )
 
     def redraw_current_plot(self, *, show_status: bool = True) -> None:
         if self.current_sample is None:

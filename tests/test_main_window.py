@@ -56,8 +56,9 @@ def test_load_sample_appends_multiple_entries_to_sample_list() -> None:
 
     assert window.current_sample is not None
     assert window.current_sample.file_name == "second.fcs"
-    assert window.sample_panel.group_list.count() == 2
-    assert window.sample_panel.group_list.item(1).text() == "Ungrouped"
+    assert window.sample_panel.group_list.count() == 3
+    assert window.sample_panel.group_list.item(1).text() == "Compensation"
+    assert window.sample_panel.group_list.item(2).text() == "Ungrouped"
     assert window.sample_panel.sample_list.count() == 2
     assert window.sample_panel.sample_list.item(0).text() == "first.fcs"
     assert window.sample_panel.sample_list.item(1).text() == "second.fcs"
@@ -143,6 +144,48 @@ def test_group_annotations_update_details_panel() -> None:
     window.on_group_selection_changed("Controls")
 
     assert window.sample_panel.group_notes_label.text() == "Notes: Tube A, unstained baseline"
+
+
+def test_workspace_starts_with_default_compensation_group() -> None:
+    get_app()
+    window = MainWindow()
+
+    assert any(
+        window.sample_panel.group_list.item(row).text() == "Compensation"
+        for row in range(window.sample_panel.group_list.count())
+    ) or "Compensation" in window.workspace.groups
+    assert window.workspace.groups["Compensation"].notes == "Reserved for single-stain compensation controls."
+
+
+def test_compensation_sample_display_name_includes_metadata_summary() -> None:
+    get_app()
+    window = MainWindow()
+    sample_state = window.workspace.add_sample(make_sample("fitc.fcs"), group_name="Compensation")
+    sample_state.compensation.control_type = "single_stain"
+    sample_state.compensation.fluorochrome = "FITC"
+    sample_state.compensation.target_channel = "FSC-A"
+    window._refresh_group_list()
+    window.on_group_selection_changed("Compensation")
+
+    assert "FITC" in window.sample_panel.sample_list.item(0).text()
+    assert "FSC-A" in window.sample_panel.sample_list.item(0).text()
+
+
+def test_sample_details_show_compensation_metadata() -> None:
+    get_app()
+    window = MainWindow()
+    sample_state = window.workspace.add_sample(make_sample("pe.fcs"), group_name="Compensation")
+    sample_state.compensation.control_type = "single_stain"
+    sample_state.compensation.fluorochrome = "PE"
+    sample_state.compensation.target_channel = "SSC-A"
+    sample_state.compensation.notes = "Bright control"
+    window._refresh_group_list()
+    window.on_group_selection_changed("Compensation")
+    window.on_sample_selection_changed(0)
+
+    assert "PE" in window.sample_panel.sample_details_label.text()
+    assert "SSC-A" in window.sample_panel.sample_details_label.text()
+    assert "Bright control" in window.sample_panel.sample_details_label.text()
 
 
 def test_apply_active_gate_to_group_copies_gate_to_matching_group() -> None:

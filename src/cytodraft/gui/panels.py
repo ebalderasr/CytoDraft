@@ -38,6 +38,7 @@ class SamplePanel(QWidget):
     recolor_group_requested = Signal(str)
     annotate_group_requested = Signal(str)
     sample_selection_changed = Signal(int)
+    edit_compensation_sample_requested = Signal(int)
     assign_sample_group_requested = Signal(int, str)
     assign_custom_sample_group_requested = Signal(int)
     apply_active_gate_to_group_requested = Signal(int)
@@ -87,6 +88,9 @@ class SamplePanel(QWidget):
         sample_box = QGroupBox("Samples in group")
         sample_layout = QVBoxLayout()
         sample_layout.addWidget(self.sample_list)
+        self.sample_details_label = QLabel("Sample details: —")
+        self.sample_details_label.setWordWrap(True)
+        sample_layout.addWidget(self.sample_details_label)
         sample_layout.addWidget(self.add_sample_button)
         sample_layout.addWidget(self.remove_sample_button)
         sample_box.setLayout(sample_layout)
@@ -181,6 +185,9 @@ class SamplePanel(QWidget):
         data = item.data(ITEM_ROLE_ID)
         return int(data) if data is not None else None
 
+    def set_sample_details(self, details: str) -> None:
+        self.sample_details_label.setText(f"Sample details: {details}" if details else "Sample details: —")
+
     def reset_gates(self) -> None:
         self.gate_list.clear()
         self.gate_list.addItem("All events")
@@ -190,6 +197,7 @@ class SamplePanel(QWidget):
     def reset_samples(self) -> None:
         self.sample_list.clear()
         self.remove_sample_button.setEnabled(False)
+        self.sample_details_label.setText("Sample details: —")
 
     def add_gate(self, label: str, *, select: bool = True) -> None:
         self.gate_list.addItem(label)
@@ -277,6 +285,7 @@ class SamplePanel(QWidget):
         for group_name in ("Specimen 1", "Specimen 2", "Specimen 3", "Controls", "Unstained", "Ungrouped"):
             preset_actions.append((group_name, assign_group_menu.addAction(group_name)))
         custom_group_action = assign_group_menu.addAction("Custom...")
+        edit_compensation_action = menu.addAction("Edit compensation details")
 
         menu.addSeparator()
         apply_active_group_action = menu.addAction("Apply active gate to this group")
@@ -296,6 +305,8 @@ class SamplePanel(QWidget):
 
         if chosen_action is custom_group_action:
             self.assign_custom_sample_group_requested.emit(int(sample_index))
+        elif chosen_action is edit_compensation_action:
+            self.edit_compensation_sample_requested.emit(int(sample_index))
         elif chosen_action is apply_active_group_action:
             self.apply_active_gate_to_group_requested.emit(int(sample_index))
         elif chosen_action is apply_all_group_action:

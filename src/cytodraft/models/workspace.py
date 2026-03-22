@@ -8,6 +8,9 @@ from cytodraft.models.sample import SampleData
 GateModel = RectangleGate | RangeGate | PolygonGate | CircleGate
 DEFAULT_GROUP_NAME = "Ungrouped"
 DEFAULT_GROUP_COLOR = "#5a6b7a"
+COMPENSATION_GROUP_NAME = "Compensation"
+COMPENSATION_GROUP_COLOR = "#0f766e"
+COMPENSATION_GROUP_NOTES = "Reserved for single-stain compensation controls."
 
 
 @dataclass(slots=True)
@@ -18,15 +21,38 @@ class WorkspaceGroup:
 
 
 @dataclass(slots=True)
+class CompensationSampleMetadata:
+    control_type: str = "single_stain"
+    fluorochrome: str = ""
+    target_channel: str = ""
+    notes: str = ""
+
+    @property
+    def summary(self) -> str:
+        parts: list[str] = []
+        if self.control_type:
+            parts.append(self.control_type.replace("_", " ").title())
+        if self.fluorochrome:
+            parts.append(self.fluorochrome)
+        if self.target_channel:
+            parts.append(f"-> {self.target_channel}")
+        return " | ".join(parts) if parts else "Compensation sample"
+
+
+@dataclass(slots=True)
 class WorkspaceSample:
     sample: SampleData
     group_name: str = DEFAULT_GROUP_NAME
     gates: list[GateModel] = field(default_factory=list)
     active_gate_name: str | None = None
+    compensation: CompensationSampleMetadata = field(default_factory=CompensationSampleMetadata)
 
     @property
     def display_name(self) -> str:
-        return f"{self.sample.file_name} [{self.group_name}]"
+        if self.group_name == COMPENSATION_GROUP_NAME:
+            summary = self.compensation.summary
+            return f"{self.sample.file_name} | {summary}"
+        return self.sample.file_name
 
 
 @dataclass(slots=True)
@@ -34,6 +60,10 @@ class WorkspaceState:
     samples: list[WorkspaceSample] = field(default_factory=list)
     groups: dict[str, WorkspaceGroup] = field(default_factory=dict)
     active_sample_index: int | None = None
+
+    def __post_init__(self) -> None:
+        self.ensure_group(COMPENSATION_GROUP_NAME).color_hex = COMPENSATION_GROUP_COLOR
+        self.groups[COMPENSATION_GROUP_NAME].notes = COMPENSATION_GROUP_NOTES
 
     @property
     def active_sample(self) -> WorkspaceSample | None:
