@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 from PySide6.QtCore import QSignalBlocker, Qt
-from PySide6.QtGui import QAction, QColor
+from PySide6.QtGui import QAction, QColor, QDragEnterEvent, QDropEvent
 from PySide6.QtWidgets import (
     QColorDialog,
     QFileDialog,
@@ -10,9 +10,13 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QSplitter,
+    QToolBar,
+    QVBoxLayout,
+    QWidget,
 )
 
 from cytodraft.core.export import (
+    export_batch_statistics_to_csv,
     export_masked_events_to_csv,
     export_masked_events_to_fcs,
     export_population_statistics_to_csv,
@@ -24,9 +28,16 @@ from cytodraft.core.gating import (
     rectangle_mask_from_parent,
     range_mask_from_parent,
 )
-from cytodraft.core.statistics import StatisticResult, calculate_population_statistics
+from cytodraft.core.statistics import (
+    CHANNEL_DEPENDENT_STATS,
+    StatisticResult,
+    calculate_population_statistics,
+)
 from cytodraft.core.transforms import apply_scale, axis_label
+from cytodraft.gui.batch_export_dialog import BatchExportDialog
+from cytodraft.gui.gate_toolbar import GateToolbar
 from cytodraft.gui.panels import InspectorPanel, SamplePanel
+from cytodraft.gui.sample_table_window import SampleTableWindow
 from cytodraft.gui.plot_widget import (
     CytometryPlotWidget,
     HistogramGateOverlay,
@@ -74,19 +85,31 @@ class MainWindow(QMainWindow):
 
         self.sample_panel = SamplePanel()
         self.plot_panel = CytometryPlotWidget()
+        self.gate_toolbar = GateToolbar()
         self.inspector_panel = InspectorPanel()
+        self._sample_table_window: SampleTableWindow | None = None
 
         self._build_ui()
         self._connect_signals()
         self._refresh_group_list()
+        self.setAcceptDrops(True)
 
         self.statusBar().showMessage("Ready")
 
     def _build_ui(self) -> None:
+        # Wrap gate toolbar + plot in a vertical container
+        plot_area = QWidget()
+        plot_area_layout = QVBoxLayout()
+        plot_area_layout.setContentsMargins(0, 0, 0, 0)
+        plot_area_layout.setSpacing(0)
+        plot_area_layout.addWidget(self.gate_toolbar)
+        plot_area_layout.addWidget(self.plot_panel)
+        plot_area.setLayout(plot_area_layout)
+
         splitter = QSplitter(Qt.Horizontal)
         splitter.setChildrenCollapsible(False)
         splitter.addWidget(self.sample_panel)
-        splitter.addWidget(self.plot_panel)
+        splitter.addWidget(plot_area)
         splitter.addWidget(self.inspector_panel)
 
         splitter.setStretchFactor(0, 2)
@@ -96,6 +119,7 @@ class MainWindow(QMainWindow):
 
         self.setCentralWidget(splitter)
         self._create_menu()
+        self._create_toolbar()
 
     def _create_menu(self) -> None:
         menu_bar = self.menuBar()
@@ -116,18 +140,38 @@ class MainWindow(QMainWindow):
         file_menu.addSeparator()
         file_menu.addAction(self.exit_action)
 
+        view_menu = menu_bar.addMenu("&View")
+        self.sample_table_action = QAction("Sample Table...", self)
+        self.sample_table_action.setShortcut("Ctrl+T")
+        self.sample_table_action.setToolTip("Open spreadsheet view of all samples with gate statistics and keywords")
+        view_menu.addAction(self.sample_table_action)
+
         help_menu = menu_bar.addMenu("&Help")
         self.about_action = QAction("About CytoDraft", self)
         help_menu.addAction(self.about_action)
+
+    def _create_toolbar(self) -> None:
+        toolbar: QToolBar = self.addToolBar("Main")
+        toolbar.setObjectName("main_toolbar")
+        toolbar.setMovable(False)
+        toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+
+        toolbar.addAction(self.open_action)
+        toolbar.addSeparator()
+        toolbar.addAction(self.export_gate_action)
+        toolbar.addSeparator()
+        toolbar.addAction(self.sample_table_action)
 
     def _connect_signals(self) -> None:
         self.open_action.triggered.connect(self.open_fcs_dialog)
         self.export_gate_action.triggered.connect(self.on_export_active_gate)
         self.exit_action.triggered.connect(self.close)
         self.about_action.triggered.connect(self.show_about_dialog)
+        self.sample_table_action.triggered.connect(self.open_sample_table)
         self.sample_panel.add_sample_button.clicked.connect(self.open_fcs_dialog)
         self.sample_panel.remove_sample_button.clicked.connect(self.remove_selected_sample)
         self.sample_panel.group_selection_changed.connect(self.on_group_selection_changed)
+        self.sample_panel.add_sample_to_group_requested.connect(self.open_fcs_dialog_for_group)
         self.sample_panel.rename_group_requested.connect(self.on_rename_group)
         self.sample_panel.recolor_group_requested.connect(self.on_recolor_group)
         self.sample_panel.annotate_group_requested.connect(self.on_annotate_group)
@@ -143,58 +187,148 @@ class MainWindow(QMainWindow):
         self.sample_panel.rename_gate_context_requested.connect(self.on_rename_gate_from_context)
         self.sample_panel.recolor_gate_context_requested.connect(self.on_recolor_gate_from_context)
         self.sample_panel.delete_gate_context_requested.connect(self.on_delete_gate_from_context)
+        self.sample_panel.export_gate_context_requested.connect(self.on_export_gate_from_context)
+        self.gate_toolbar.draw_requested.connect(self.on_create_gate)
+        self.gate_toolbar.apply_requested.connect(self.on_apply_gate)
+        self.gate_toolbar.clear_requested.connect(self.on_clear_draft_gate)
         self.inspector_panel.axes_changed.connect(self.on_axes_changed)
         self.inspector_panel.plot_mode_changed.connect(self.on_plot_mode_changed)
         self.inspector_panel.sampling_changed.connect(self.on_sampling_changed)
         self.inspector_panel.view_settings_changed.connect(self.on_view_settings_changed)
         self.inspector_panel.auto_range_requested.connect(self.on_auto_range_requested)
-        self.inspector_panel.create_gate_requested.connect(self.on_create_gate)
-        self.inspector_panel.apply_gate_requested.connect(self.on_apply_gate)
-        self.inspector_panel.clear_gate_requested.connect(self.on_clear_draft_gate)
-        self.inspector_panel.export_gate_requested.connect(self.on_export_active_gate)
         self.inspector_panel.calculate_statistics_requested.connect(self.on_calculate_statistics)
         self.inspector_panel.export_statistics_requested.connect(self.on_export_statistics)
-        self.inspector_panel.rename_gate_requested.connect(self.on_rename_active_gate)
-        self.inspector_panel.recolor_gate_requested.connect(self.on_recolor_active_gate)
+        self.inspector_panel.batch_export_statistics_requested.connect(self.on_batch_export_statistics)
+        self.inspector_panel.universal_negative_changed.connect(self.on_universal_negative_changed)
+        self.inspector_panel.assign_positive_population_requested.connect(
+            self.on_assign_active_gate_as_compensation_positive
+        )
+        self.inspector_panel.assign_negative_population_requested.connect(
+            self.on_assign_active_gate_as_compensation_negative
+        )
+
+    # ------------------------------------------------------------------
+    # Sample Table window
+    # ------------------------------------------------------------------
+
+    def open_sample_table(self) -> None:
+        """Open (or bring to front) the Sample Table window."""
+        if self._sample_table_window is None or not self._sample_table_window.isVisible():
+            self._sample_table_window = SampleTableWindow(self.workspace, parent=self)
+        else:
+            self._sample_table_window.refresh()
+        self._sample_table_window.show()
+        self._sample_table_window.raise_()
+        self._sample_table_window.activateWindow()
+
+    def _refresh_sample_table(self) -> None:
+        """Refresh the Sample Table window if it is open."""
+        if self._sample_table_window is not None and self._sample_table_window.isVisible():
+            self._sample_table_window.refresh()
+
+    # ------------------------------------------------------------------
+    # FCS file loading
+    # ------------------------------------------------------------------
 
     def open_fcs_dialog(self) -> None:
-        file_path, _ = QFileDialog.getOpenFileName(
+        target_group = self.selected_group_name
+        self.open_fcs_dialog_for_group(target_group)
+
+    def open_fcs_dialog_for_group(self, group_name: str | None) -> None:
+        file_paths, _ = QFileDialog.getOpenFileNames(
             self,
-            "Open FCS file",
+            "Open FCS files",
             "",
             "FCS files (*.fcs);;All files (*)",
         )
 
-        if not file_path:
+        if not file_paths:
             self.statusBar().showMessage("Open file cancelled", 3000)
             return
 
-        self.load_sample(file_path)
+        self.load_samples(file_paths, group_name=group_name)
 
-    def load_sample(self, file_path: str) -> None:
-        try:
-            sample = self.sample_service.load_sample(file_path)
-        except Exception as exc:
-            QMessageBox.critical(
-                self,
-                "Failed to load FCS",
-                f"Could not read file:\n{file_path}\n\nError:\n{exc}",
-            )
-            self.statusBar().showMessage("Failed to load FCS file", 5000)
+    def load_samples(self, file_paths: list[str], group_name: str | None = None) -> None:
+        loaded_count = 0
+        failed_files: list[tuple[str, str]] = []
+
+        resolved_group_name = group_name.strip() if group_name is not None else DEFAULT_GROUP_NAME
+        if not resolved_group_name:
+            resolved_group_name = DEFAULT_GROUP_NAME
+
+        for file_path in file_paths:
+            try:
+                sample = self.sample_service.load_sample(file_path)
+            except Exception as exc:
+                failed_files.append((file_path, str(exc)))
+                continue
+
+            self.workspace.add_sample(sample, group_name=resolved_group_name)
+            loaded_count += 1
+
+        if loaded_count == 0:
+            if failed_files:
+                QMessageBox.critical(
+                    self,
+                    "Failed to load FCS files",
+                    "\n\n".join(f"{path}\n{error}" for path, error in failed_files),
+                )
+            self.statusBar().showMessage("Failed to load FCS files", 5000)
             return
 
-        self.workspace.add_sample(sample)
+        self.selected_group_name = resolved_group_name if group_name is not None or self.selected_group_name == resolved_group_name else self.selected_group_name
+        if group_name is not None:
+            self.selected_group_name = resolved_group_name
         self._sync_from_workspace()
         self._clear_statistics_results()
         self._refresh_group_list()
         self._refresh_sample_list(select_active=True)
+        self._refresh_compensation_setup()
         self._refresh_gate_panel()
         self._show_active_sample()
+        self._refresh_sample_table()
+
+        if failed_files:
+            QMessageBox.warning(
+                self,
+                "Some FCS files could not be loaded",
+                "\n\n".join(f"{path}\n{error}" for path, error in failed_files),
+            )
+            self.statusBar().showMessage(
+                f"Loaded {loaded_count} file(s); {len(failed_files)} failed",
+                6000,
+            )
+            return
 
         self.statusBar().showMessage(
-            f"Loaded {sample.file_name} | {sample.event_count} events | {sample.channel_count} channels",
+            f"Loaded {loaded_count} FCS file(s) into {resolved_group_name}",
             6000,
         )
+
+    def load_sample(self, file_path: str, group_name: str | None = None) -> None:
+        self.load_samples([file_path], group_name=group_name)
+
+    def dragEnterEvent(self, event: QDragEnterEvent) -> None:
+        mime_data = event.mimeData()
+        if mime_data.hasUrls() and any(url.isLocalFile() and url.toLocalFile().lower().endswith(".fcs") for url in mime_data.urls()):
+            event.acceptProposedAction()
+            return
+        event.ignore()
+
+    def dropEvent(self, event: QDropEvent) -> None:
+        mime_data = event.mimeData()
+        file_paths = [
+            url.toLocalFile()
+            for url in mime_data.urls()
+            if url.isLocalFile() and url.toLocalFile().lower().endswith(".fcs")
+        ]
+        if not file_paths:
+            event.ignore()
+            return
+
+        target_group = self.selected_group_name
+        self.load_samples(file_paths, group_name=target_group)
+        event.acceptProposedAction()
 
     def _active_workspace_sample(self) -> WorkspaceSample | None:
         return self.workspace.active_sample
@@ -227,6 +361,7 @@ class MainWindow(QMainWindow):
                         self.sample_panel.sample_list.setCurrentRow(row)
                         break
         self.sample_panel.remove_sample_button.setEnabled(active_index is not None)
+        self._refresh_compensation_setup()
 
     def _refresh_group_list(self) -> None:
         current_group_name = self.selected_group_name
@@ -246,6 +381,77 @@ class MainWindow(QMainWindow):
             return
         group = self.workspace.groups.get(self.selected_group_name)
         self.sample_panel.set_group_notes("" if group is None else group.notes)
+
+    def _population_selection_label(self, sample_index: int | None, population_name: str) -> str:
+        if sample_index is None or not population_name:
+            return "—"
+        if sample_index < 0 or sample_index >= len(self.workspace.samples):
+            return population_name
+        return f"{self.workspace.samples[sample_index].sample.file_name}: {population_name}"
+
+    def _refresh_compensation_setup(self) -> None:
+        compensation_samples = self.workspace.compensation_samples()
+        if not compensation_samples:
+            self.inspector_panel.clear_compensation_setup()
+            return
+
+        sample_options = [
+            (workspace_sample.sample.file_name, workspace_index)
+            for workspace_index, workspace_sample in compensation_samples
+        ]
+        selected_sample_index = self.inspector_panel.current_compensation_sample_index()
+        if selected_sample_index is None or not any(idx == selected_sample_index for _, idx in sample_options):
+            selected_sample_index = compensation_samples[0][0]
+        self.inspector_panel.set_compensation_samples(
+            sample_options,
+            selected_sample_index=selected_sample_index,
+        )
+
+        universal_negative_options: list[tuple[str, int | None]] = [("None", None)] + sample_options
+        self.inspector_panel.set_universal_negative_samples(
+            universal_negative_options,
+            selected_sample_index=self.workspace.universal_negative_sample_index,
+        )
+
+        rows: list[tuple[str, ...]] = []
+        configured_count = 0
+        for workspace_index, workspace_sample in compensation_samples:
+            positive_label = self._population_selection_label(
+                workspace_sample.compensation_positive.sample_index,
+                workspace_sample.compensation_positive.population_name,
+            )
+            negative_sample_index = (
+                workspace_sample.compensation_negative.sample_index
+                if workspace_sample.use_universal_negative
+                else workspace_index
+            )
+            negative_label = self._population_selection_label(
+                negative_sample_index,
+                workspace_sample.compensation_negative.population_name,
+            )
+            status_parts: list[str] = []
+            if workspace_sample.compensation_positive.is_configured:
+                status_parts.append("positive")
+            if workspace_sample.compensation_negative.population_name:
+                status_parts.append("negative")
+            status = " / ".join(status_parts) if status_parts else "pending"
+            if workspace_sample.compensation_positive.is_configured and workspace_sample.compensation_negative.population_name:
+                configured_count += 1
+            rows.append(
+                (
+                    workspace_sample.sample.file_name,
+                    workspace_sample.compensation.control_type.replace("_", " ").title(),
+                    workspace_sample.compensation.fluorochrome or "—",
+                    workspace_sample.compensation.target_channel or "—",
+                    positive_label,
+                    negative_label,
+                    status,
+                )
+            )
+        self.inspector_panel.set_compensation_rows(rows)
+        self.inspector_panel.set_compensation_status(
+            f"{configured_count}/{len(compensation_samples)} controls have positive and negative populations assigned."
+        )
 
     def _refresh_sample_details(self) -> None:
         sample_index = self.sample_panel.current_sample_workspace_index()
@@ -272,11 +478,9 @@ class MainWindow(QMainWindow):
             if self.active_gate is None:
                 self.sample_panel.select_gate_row(0)
                 self.inspector_panel.set_active_gate("All events")
-                self.inspector_panel.set_gate_editor_state(None, None)
             else:
                 self.sample_panel.select_gate_row(self.gates.index(self.active_gate) + 1)
                 self.inspector_panel.set_active_gate(self.active_gate.name)
-                self.inspector_panel.set_gate_editor_state(self.active_gate.name, self.active_gate.color_hex)
         self._update_population_context_labels()
         self._refresh_statistics_population_options()
 
@@ -496,12 +700,12 @@ class MainWindow(QMainWindow):
         self._update_population_context_labels()
         self.inspector_panel.set_file_info()
         self.inspector_panel.set_displayed_points(None, None)
-        self.inspector_panel.set_gate_editor_state(None, None)
         self.inspector_panel.clear_channels()
         self.inspector_panel.clear_statistics()
         self._clear_statistics_results()
         self.plot_panel.clear_all_rois()
         self.plot_panel.show_placeholder_data()
+        self.gate_toolbar.set_drawing_active(False)
 
     def remove_selected_sample(self) -> None:
         sample_index = self.sample_panel.current_sample_workspace_index()
@@ -519,6 +723,7 @@ class MainWindow(QMainWindow):
         else:
             self._refresh_gate_panel()
             self._show_active_sample()
+        self._refresh_sample_table()
         self.statusBar().showMessage(f"Removed {removed_name}", 4000)
 
     def on_sample_selection_changed(self, row: int) -> None:
@@ -544,6 +749,72 @@ class MainWindow(QMainWindow):
         self._refresh_group_notes()
         self._refresh_sample_list(select_active=True)
         self._refresh_sample_details()
+
+    def on_universal_negative_changed(self, sample_index: object) -> None:
+        if sample_index is None:
+            self.workspace.universal_negative_sample_index = None
+        else:
+            self.workspace.universal_negative_sample_index = int(sample_index)
+        self._refresh_compensation_setup()
+
+    def on_assign_active_gate_as_compensation_positive(self) -> None:
+        compensation_sample_index = self.inspector_panel.current_compensation_sample_index()
+        if compensation_sample_index is None:
+            self.statusBar().showMessage("Select a compensation sample first", 4000)
+            return
+        if self.active_gate is None:
+            self.statusBar().showMessage("Select a gate to assign as positive population", 4000)
+            return
+        if self.workspace.active_sample_index != compensation_sample_index:
+            self.statusBar().showMessage(
+                "Open the selected compensation sample and choose its positive gate",
+                5000,
+            )
+            return
+        workspace_sample = self.workspace.samples[compensation_sample_index]
+        workspace_sample.compensation_positive.sample_index = compensation_sample_index
+        workspace_sample.compensation_positive.population_name = self.active_gate.name
+        self._refresh_compensation_setup()
+        self.statusBar().showMessage(
+            f"Assigned {self.active_gate.name} as positive population for {workspace_sample.sample.file_name}",
+            5000,
+        )
+
+    def on_assign_active_gate_as_compensation_negative(self) -> None:
+        compensation_sample_index = self.inspector_panel.current_compensation_sample_index()
+        if compensation_sample_index is None:
+            self.statusBar().showMessage("Select a compensation sample first", 4000)
+            return
+        if self.active_gate is None:
+            self.statusBar().showMessage("Select a gate to assign as negative population", 4000)
+            return
+
+        workspace_sample = self.workspace.samples[compensation_sample_index]
+        active_sample_index = self.workspace.active_sample_index
+        if active_sample_index is None:
+            self.statusBar().showMessage("Open a sample before assigning the negative population", 4000)
+            return
+
+        if active_sample_index == compensation_sample_index:
+            negative_sample_index = compensation_sample_index
+            workspace_sample.use_universal_negative = False
+        elif self.workspace.universal_negative_sample_index is not None and active_sample_index == self.workspace.universal_negative_sample_index:
+            negative_sample_index = self.workspace.universal_negative_sample_index
+            workspace_sample.use_universal_negative = True
+        else:
+            self.statusBar().showMessage(
+                "Negative gate must come from the control sample or the configured universal negative sample",
+                6000,
+            )
+            return
+
+        workspace_sample.compensation_negative.sample_index = negative_sample_index
+        workspace_sample.compensation_negative.population_name = self.active_gate.name
+        self._refresh_compensation_setup()
+        self.statusBar().showMessage(
+            f"Assigned {self.active_gate.name} as negative population for {workspace_sample.sample.file_name}",
+            5000,
+        )
 
     def on_rename_group(self, group_name: str) -> None:
         group = self.workspace.groups.get(group_name)
@@ -875,6 +1146,8 @@ class MainWindow(QMainWindow):
 
     def on_plot_mode_changed(self, mode: str) -> None:
         self.plot_panel.clear_all_rois()
+        self.gate_toolbar.set_plot_mode(mode)
+        self.gate_toolbar.set_drawing_active(False)
         self.redraw_current_plot()
         self.statusBar().showMessage(f"Plot mode set to {mode}", 3000)
 
@@ -901,7 +1174,6 @@ class MainWindow(QMainWindow):
             if workspace_sample is not None:
                 workspace_sample.active_gate_name = None
             self.inspector_panel.set_active_gate("All events")
-            self.inspector_panel.set_gate_editor_state(None, None)
         else:
             gate_index = row - 1
             if gate_index >= len(self.gates):
@@ -911,10 +1183,6 @@ class MainWindow(QMainWindow):
             if workspace_sample is not None:
                 workspace_sample.active_gate_name = self.active_gate.name
             self.inspector_panel.set_active_gate(self.active_gate.name)
-            self.inspector_panel.set_gate_editor_state(
-                self.active_gate.name,
-                self.active_gate.color_hex,
-            )
 
         self._refresh_statistics_population_options()
         self._update_population_context_labels()
@@ -929,34 +1197,32 @@ class MainWindow(QMainWindow):
                 4000,
             )
 
-    def on_create_gate(self) -> None:
+    def on_create_gate(self, gate_type: str) -> None:
         if self.current_sample is None:
             self.statusBar().showMessage("Load an FCS file before creating a gate", 4000)
             return
 
-        mode = self.inspector_panel.current_plot_mode()
-        if mode == "histogram":
+        if gate_type == "range":
             created = self.plot_panel.create_range_region()
             draft_name = f"Draft range on {self.current_population_name()}"
-        else:
-            scatter_gate_type = self.inspector_panel.current_scatter_gate_type()
-            if scatter_gate_type == "polygon":
-                created = self.plot_panel.create_polygon_roi()
-                draft_name = f"Draft polygon on {self.current_population_name()}"
-            elif scatter_gate_type == "circle":
-                created = self.plot_panel.create_circle_roi()
-                draft_name = f"Draft circle on {self.current_population_name()}"
-            else:
-                created = self.plot_panel.create_rectangle_roi()
-                draft_name = f"Draft rectangle on {self.current_population_name()}"
+        elif gate_type == "polygon":
+            created = self.plot_panel.create_polygon_roi()
+            draft_name = f"Draft polygon on {self.current_population_name()}"
+        elif gate_type == "circle":
+            created = self.plot_panel.create_circle_roi()
+            draft_name = f"Draft circle on {self.current_population_name()}"
+        else:  # rectangle
+            created = self.plot_panel.create_rectangle_roi()
+            draft_name = f"Draft rectangle on {self.current_population_name()}"
 
         if not created:
             self.statusBar().showMessage("Could not create gate on the current plot", 4000)
             return
 
         self.inspector_panel.set_active_gate(draft_name)
+        self.gate_toolbar.set_drawing_active(True)
         self.statusBar().showMessage(
-            "Gate ROI created. Adjust it and then click Apply gate.",
+            "Gate ROI created — adjust it on the plot, then click Apply Gate.",
             5000,
         )
 
@@ -968,11 +1234,13 @@ class MainWindow(QMainWindow):
         mode = self.inspector_panel.current_plot_mode()
         if mode == "histogram":
             self._apply_range_gate()
+            self.gate_toolbar.set_drawing_active(False)
             return
 
         polygon_points = self.plot_panel.polygon_roi_points()
         if polygon_points is not None:
             self._apply_polygon_gate()
+            self.gate_toolbar.set_drawing_active(False)
             return
 
         circle_geometry = self.plot_panel.circle_roi_geometry()
@@ -980,6 +1248,7 @@ class MainWindow(QMainWindow):
             self._apply_circle_gate()
         else:
             self._apply_rectangle_gate()
+        self.gate_toolbar.set_drawing_active(False)
 
     def prompt_for_gate_details(
         self,
@@ -1326,8 +1595,10 @@ class MainWindow(QMainWindow):
         self._refresh_statistics_population_options()
         self.sample_panel.add_gate(self._gate_list_label(gate), select=False)
         self._refresh_gate_list_labels()
+        self._refresh_compensation_setup()
         new_row = len(self.gates)
         self.sample_panel.select_gate_row(new_row)
+        self._refresh_sample_table()
 
     def on_rename_active_gate(self, raw_name: str) -> None:
         if self.active_gate is None:
@@ -1335,10 +1606,6 @@ class MainWindow(QMainWindow):
 
         new_name = raw_name.strip()
         if not new_name:
-            self.inspector_panel.set_gate_editor_state(
-                self.active_gate.name,
-                self.active_gate.color_hex,
-            )
             self.statusBar().showMessage("Gate name cannot be empty", 3000)
             return
 
@@ -1350,18 +1617,20 @@ class MainWindow(QMainWindow):
         workspace_sample = self._active_workspace_sample()
         if workspace_sample is not None and workspace_sample.active_gate_name == old_name:
             workspace_sample.active_gate_name = new_name
+        for workspace_sample in self.workspace.samples:
+            if workspace_sample.compensation_positive.population_name == old_name:
+                workspace_sample.compensation_positive.population_name = new_name
+            if workspace_sample.compensation_negative.population_name == old_name:
+                workspace_sample.compensation_negative.population_name = new_name
         for gate in self.gates:
             if gate.parent_name == old_name:
                 gate.parent_name = new_name
         self._refresh_gate_list_labels()
         self.inspector_panel.set_active_gate(self.active_gate.name)
-        self.inspector_panel.set_gate_editor_state(
-            self.active_gate.name,
-            self.active_gate.color_hex,
-        )
         self._clear_statistics_results()
         self._refresh_statistics_population_options()
         self._update_population_context_labels()
+        self._refresh_compensation_setup()
         self.redraw_current_plot(show_status=False)
         self.statusBar().showMessage(f"Renamed gate to {self.active_gate.name}", 4000)
 
@@ -1383,10 +1652,6 @@ class MainWindow(QMainWindow):
         self.sample_panel.update_gate(
             gate_index,
             self._gate_list_label(self.active_gate),
-            self.active_gate.color_hex,
-        )
-        self.inspector_panel.set_gate_editor_state(
-            self.active_gate.name,
             self.active_gate.color_hex,
         )
         self.statusBar().showMessage(
@@ -1413,6 +1678,12 @@ class MainWindow(QMainWindow):
         self.active_gate = self.gates[gate_index]
         self.on_recolor_active_gate()
 
+    def on_export_gate_from_context(self, gate_index: int) -> None:
+        if gate_index < 0 or gate_index >= len(self.gates):
+            return
+        self.active_gate = self.gates[gate_index]
+        self.on_export_active_gate()
+
     def on_delete_gate_from_context(self, gate_index: int) -> None:
         gate = self.gates[gate_index]
         answer = QMessageBox.question(
@@ -1433,12 +1704,19 @@ class MainWindow(QMainWindow):
         workspace_sample = self._active_workspace_sample()
         if workspace_sample is not None:
             workspace_sample.active_gate_name = None
+        for workspace_sample in self.workspace.samples:
+            if workspace_sample.compensation_positive.population_name in names_to_delete:
+                workspace_sample.compensation_positive.population_name = ""
+                workspace_sample.compensation_positive.sample_index = None
+            if workspace_sample.compensation_negative.population_name in names_to_delete:
+                workspace_sample.compensation_negative.population_name = ""
+                workspace_sample.compensation_negative.sample_index = None
         self._clear_statistics_results()
         self.sample_panel.select_gate_row(0)
         self.inspector_panel.set_active_gate("All events")
-        self.inspector_panel.set_gate_editor_state(None, None)
         self._refresh_statistics_population_options()
         self._update_population_context_labels()
+        self._refresh_compensation_setup()
         self.redraw_current_plot(show_status=False)
         if len(names_to_delete) == 1:
             self.statusBar().showMessage(f"Deleted {gate.name}", 4000)
@@ -1451,6 +1729,7 @@ class MainWindow(QMainWindow):
     def on_clear_draft_gate(self) -> None:
         self.plot_panel.clear_all_rois()
         self.inspector_panel.set_active_gate(self.current_population_name())
+        self.gate_toolbar.set_drawing_active(False)
         self.statusBar().showMessage("Draft gate cleared", 4000)
 
     def on_calculate_statistics(self) -> None:
@@ -1536,6 +1815,144 @@ class MainWindow(QMainWindow):
             return
 
         self.statusBar().showMessage(f"Exported statistics to {output_path}", 6000)
+
+    def on_batch_export_statistics(self) -> None:
+        """Open the batch export dialog and compute+export statistics across groups."""
+        if not self.workspace.samples:
+            self.statusBar().showMessage("No samples loaded", 3000)
+            return
+
+        dialog = BatchExportDialog(self.workspace, self)
+        if not dialog.exec():
+            return
+
+        selected_groups = dialog.selected_groups()
+        selected_populations = dialog.selected_populations()
+        selected_channels = dialog.selected_channels()
+        selected_metrics = dialog.selected_metric_keys()
+
+        if not selected_groups:
+            QMessageBox.warning(self, "Batch export", "Select at least one group.")
+            return
+        if not selected_populations:
+            QMessageBox.warning(self, "Batch export", "Select at least one population.")
+            return
+        if not selected_metrics:
+            QMessageBox.warning(self, "Batch export", "Select at least one metric.")
+            return
+
+        channel_independent = [k for k in selected_metrics if k not in CHANNEL_DEPENDENT_STATS]
+        channel_dependent = [k for k in selected_metrics if k in CHANNEL_DEPENDENT_STATS]
+
+        rows: list[dict] = []
+        for _, ws in self.workspace.samples_in_group(None):
+            if ws.group_name not in selected_groups:
+                continue
+            sample = ws.sample
+            gate_by_name = {g.name: g for g in ws.gates}
+
+            for pop_name in selected_populations:
+                if pop_name == "All events":
+                    pop_mask = np.ones(sample.event_count, dtype=bool)
+                    parent_mask: np.ndarray | None = None
+                else:
+                    gate = gate_by_name.get(pop_name)
+                    if gate is None:
+                        continue
+                    pop_mask = gate.full_mask
+                    parent_gate = gate_by_name.get(gate.parent_name)
+                    parent_mask = (
+                        parent_gate.full_mask
+                        if parent_gate is not None
+                        else np.ones(sample.event_count, dtype=bool)
+                    )
+
+                # Channel-independent stats — computed once per (sample, population)
+                if channel_independent:
+                    dummy = np.empty(0)
+                    for stat in calculate_population_statistics(
+                        dummy,
+                        pop_mask,
+                        total_event_count=sample.event_count,
+                        parent_mask=parent_mask,
+                        statistics=channel_independent,
+                    ):
+                        rows.append(
+                            {
+                                "group": ws.group_name,
+                                "sample": sample.file_name,
+                                "population": pop_name,
+                                "channel": "—",
+                                "statistic_key": stat.key,
+                                "statistic_label": stat.label,
+                                "value": stat.value,
+                            }
+                        )
+
+                # Channel-dependent stats — once per (sample, population, channel)
+                if channel_dependent and selected_channels:
+                    for ch_name in selected_channels:
+                        ch_index = next(
+                            (
+                                i
+                                for i, ch in enumerate(sample.channels)
+                                if ch.display_name == ch_name
+                            ),
+                            None,
+                        )
+                        if ch_index is None:
+                            continue
+                        ch_values = sample.events[pop_mask, ch_index]
+                        for stat in calculate_population_statistics(
+                            ch_values,
+                            pop_mask,
+                            total_event_count=sample.event_count,
+                            parent_mask=parent_mask,
+                            statistics=channel_dependent,
+                        ):
+                            rows.append(
+                                {
+                                    "group": ws.group_name,
+                                    "sample": sample.file_name,
+                                    "population": pop_name,
+                                    "channel": ch_name,
+                                    "statistic_key": stat.key,
+                                    "statistic_label": stat.label,
+                                    "value": stat.value,
+                                }
+                            )
+
+        if not rows:
+            QMessageBox.information(
+                self,
+                "Batch export",
+                "No data found for the current selection.\n"
+                "Check that the selected samples have the chosen gates and channels.",
+            )
+            return
+
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export Statistics Batch",
+            "statistics_batch.csv",
+            "CSV files (*.csv);;All files (*)",
+        )
+        if not file_path:
+            return
+
+        try:
+            output_path = export_batch_statistics_to_csv(rows, file_path)
+        except Exception as exc:
+            QMessageBox.critical(
+                self,
+                "Batch export failed",
+                f"Could not export statistics.\n\nError:\n{exc}",
+            )
+            return
+
+        self.statusBar().showMessage(
+            f"Exported {len(rows)} rows to {output_path}", 6000
+        )
 
     @staticmethod
     def _format_statistic_value(result: StatisticResult) -> str:

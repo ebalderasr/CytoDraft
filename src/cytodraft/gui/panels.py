@@ -4,7 +4,6 @@ from PySide6.QtCore import QSignalBlocker, Qt, Signal
 from PySide6.QtGui import QColor, QDoubleValidator
 from PySide6.QtWidgets import (
     QAbstractItemView,
-    QButtonGroup,
     QCheckBox,
     QComboBox,
     QFormLayout,
@@ -34,6 +33,7 @@ class SamplePanel(QWidget):
     """Left panel: loaded samples and gate list."""
 
     group_selection_changed = Signal(object)
+    add_sample_to_group_requested = Signal(str)
     rename_group_requested = Signal(str)
     recolor_group_requested = Signal(str)
     annotate_group_requested = Signal(str)
@@ -49,6 +49,7 @@ class SamplePanel(QWidget):
     rename_gate_context_requested = Signal(int)
     recolor_gate_context_requested = Signal(int)
     delete_gate_context_requested = Signal(int)
+    export_gate_context_requested = Signal(int)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -60,16 +61,19 @@ class SamplePanel(QWidget):
         self.sample_list.setAlternatingRowColors(True)
         self.sample_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.sample_list.setSpacing(2)
+        self.sample_list.setMinimumHeight(90)
 
         self.group_list = QListWidget()
         self.group_list.setAlternatingRowColors(True)
         self.group_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.group_list.setSpacing(2)
+        self.group_list.setMinimumHeight(70)
 
         self.gate_list = QListWidget()
         self.gate_list.setAlternatingRowColors(True)
         self.gate_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.gate_list.setSpacing(2)
+        self.gate_list.setMinimumHeight(70)
 
         self.add_sample_button = QPushButton("Open FCS")
         self.add_sample_button.setProperty("variant", "primary")
@@ -252,6 +256,8 @@ class SamplePanel(QWidget):
             return
 
         menu = QMenu(self)
+        add_sample_action = menu.addAction("Add sample to this group")
+        menu.addSeparator()
         rename_action = menu.addAction("Rename group")
         recolor_action = menu.addAction("Change group color")
         annotate_action = menu.addAction("Edit annotations")
@@ -260,7 +266,9 @@ class SamplePanel(QWidget):
             return
 
         self.group_list.setCurrentItem(item)
-        if chosen_action is rename_action:
+        if chosen_action is add_sample_action:
+            self.add_sample_to_group_requested.emit(group_name)
+        elif chosen_action is rename_action:
             self.rename_group_requested.emit(group_name)
         elif chosen_action is recolor_action:
             self.recolor_group_requested.emit(group_name)
@@ -282,7 +290,15 @@ class SamplePanel(QWidget):
         menu = QMenu(self)
         assign_group_menu = menu.addMenu("Assign group")
         preset_actions: list[tuple[str, object]] = []
-        for group_name in ("Specimen 1", "Specimen 2", "Specimen 3", "Controls", "Unstained", "Ungrouped"):
+        for group_name in (
+            "Specimen 1",
+            "Specimen 2",
+            "Specimen 3",
+            "Controls",
+            "Unstained",
+            "Compensation",
+            "Ungrouped",
+        ):
             preset_actions.append((group_name, assign_group_menu.addAction(group_name)))
         custom_group_action = assign_group_menu.addAction("Custom...")
         edit_compensation_action = menu.addAction("Edit compensation details")
@@ -328,6 +344,9 @@ class SamplePanel(QWidget):
         menu = QMenu(self)
         rename_action = menu.addAction("Rename gate")
         recolor_action = menu.addAction("Change color")
+        menu.addSeparator()
+        export_action = menu.addAction("Export gate events...")
+        menu.addSeparator()
         delete_action = menu.addAction("Delete gate")
         chosen_action = menu.exec(self.gate_list.mapToGlobal(pos))
         if chosen_action is None:
@@ -339,6 +358,8 @@ class SamplePanel(QWidget):
             self.rename_gate_context_requested.emit(gate_index)
         elif chosen_action is recolor_action:
             self.recolor_gate_context_requested.emit(gate_index)
+        elif chosen_action is export_action:
+            self.export_gate_context_requested.emit(gate_index)
         elif chosen_action is delete_action:
             self.delete_gate_context_requested.emit(gate_index)
 
@@ -351,14 +372,12 @@ class InspectorPanel(QWidget):
     sampling_changed = Signal(bool, int)
     view_settings_changed = Signal()
     auto_range_requested = Signal()
-    create_gate_requested = Signal()
-    apply_gate_requested = Signal()
-    clear_gate_requested = Signal()
-    export_gate_requested = Signal()
     calculate_statistics_requested = Signal()
     export_statistics_requested = Signal()
-    rename_gate_requested = Signal(str)
-    recolor_gate_requested = Signal()
+    batch_export_statistics_requested = Signal()
+    universal_negative_changed = Signal(object)
+    assign_positive_population_requested = Signal()
+    assign_negative_population_requested = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -392,24 +411,6 @@ class InspectorPanel(QWidget):
         self.plot_mode_combo = QComboBox()
         self.plot_mode_combo.addItem("Scatter (2D)", "scatter")
         self.plot_mode_combo.addItem("Histogram (1D)", "histogram")
-
-        self.rectangle_gate_button = QPushButton("Rectangle")
-        self.rectangle_gate_button.setCheckable(True)
-        self.polygon_gate_button = QPushButton("Polygon")
-        self.polygon_gate_button.setCheckable(True)
-        self.circle_gate_button = QPushButton("Circle")
-        self.circle_gate_button.setCheckable(True)
-
-        self.scatter_gate_group = QButtonGroup(self)
-        self.scatter_gate_group.setExclusive(True)
-        self.scatter_gate_group.addButton(self.rectangle_gate_button)
-        self.scatter_gate_group.addButton(self.polygon_gate_button)
-        self.scatter_gate_group.addButton(self.circle_gate_button)
-        self.rectangle_gate_button.setChecked(True)
-
-        self.histogram_range_button = QPushButton("Range")
-        self.histogram_range_button.setCheckable(True)
-        self.histogram_range_button.setChecked(True)
 
         self.x_axis_combo = QComboBox()
         self.y_axis_combo = QComboBox()
@@ -453,33 +454,13 @@ class InspectorPanel(QWidget):
         self.auto_range_button.setProperty("variant", "subtle")
 
         for button in (
-            self.rectangle_gate_button,
-            self.polygon_gate_button,
-            self.circle_gate_button,
-            self.histogram_range_button,
             self.apply_view_button,
             self.auto_range_button,
         ):
             button.setMinimumHeight(38)
             button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
-        scatter_gate_buttons_widget = QWidget()
-        scatter_gate_button_layout = QVBoxLayout()
-        scatter_gate_button_layout.setContentsMargins(0, 0, 0, 0)
-        scatter_gate_button_layout.setSpacing(8)
-        scatter_gate_button_layout.addWidget(self.rectangle_gate_button)
-        scatter_gate_button_layout.addWidget(self.polygon_gate_button)
-        scatter_gate_button_layout.addWidget(self.circle_gate_button)
-        scatter_gate_buttons_widget.setLayout(scatter_gate_button_layout)
-
-        histogram_gate_button_widget = QWidget()
-        histogram_gate_button_layout = QVBoxLayout()
-        histogram_gate_button_layout.setContentsMargins(0, 0, 0, 0)
-        histogram_gate_button_layout.setSpacing(8)
-        histogram_gate_button_layout.addWidget(self.histogram_range_button)
-        histogram_gate_button_widget.setLayout(histogram_gate_button_layout)
-
-        visualization_box = QGroupBox("Visualizacion")
+        visualization_box = QGroupBox("Visualization")
         visualization_form = QFormLayout()
         visualization_form.addRow("Plot mode:", self.plot_mode_combo)
         visualization_form.addRow("X axis:", self.x_axis_combo)
@@ -487,7 +468,7 @@ class InspectorPanel(QWidget):
         visualization_form.addRow("", self.show_subpopulations_checkbox)
         visualization_box.setLayout(visualization_form)
 
-        plot_adjustments_box = QGroupBox("Ajustes de grafica")
+        plot_adjustments_box = QGroupBox("Scales & Range")
         plot_adjustments_form = QFormLayout()
         plot_adjustments_form.addRow("X scale:", self.x_scale_combo)
         plot_adjustments_form.addRow("Y scale:", self.y_scale_combo)
@@ -501,78 +482,20 @@ class InspectorPanel(QWidget):
         plot_adjustments_form.addRow("Max points:", self.max_points_spin)
         plot_adjustments_box.setLayout(plot_adjustments_form)
 
-        self.create_gate_button = QPushButton("Create gate")
-        self.create_gate_button.setProperty("variant", "subtle")
-        self.apply_gate_button = QPushButton("Apply gate")
-        self.apply_gate_button.setProperty("variant", "primary")
-        self.clear_gate_button = QPushButton("Clear draft")
-        self.clear_gate_button.setProperty("variant", "danger")
-        self.export_gate_button = QPushButton("Export gate")
-        self.export_gate_button.setProperty("variant", "subtle")
-        self.gate_name_edit = QLineEdit()
-        self.gate_name_edit.setPlaceholderText("Select a gate")
-        self.gate_color_button = QPushButton("Gate color")
-        self.gate_color_button.setProperty("variant", "subtle")
+        view_controls_box = QWidget()
+        view_layout = QVBoxLayout()
+        view_layout.setContentsMargins(0, 0, 0, 0)
+        view_layout.setSpacing(12)
+        view_layout.addWidget(visualization_box)
+        view_layout.addWidget(plot_adjustments_box)
+        view_layout.addStretch(1)
+        view_controls_box.setLayout(view_layout)
 
-        for button in (
-            self.create_gate_button,
-            self.apply_gate_button,
-            self.clear_gate_button,
-            self.export_gate_button,
-            self.gate_color_button,
-        ):
-            button.setMinimumHeight(38)
-            button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-
-        gate_controls_box = QWidget()
-        gate_layout = QVBoxLayout()
-        gate_layout.setContentsMargins(0, 0, 0, 0)
-        gate_layout.setSpacing(12)
-        scatter_gate_box = QGroupBox("Scatter gate type")
-        scatter_gate_layout = QVBoxLayout()
-        scatter_gate_layout.setContentsMargins(0, 0, 0, 0)
-        scatter_gate_layout.setSpacing(8)
-        scatter_gate_layout.addWidget(scatter_gate_buttons_widget)
-        scatter_gate_box.setLayout(scatter_gate_layout)
-
-        histogram_gate_box = QGroupBox("Histogram gate type")
-        histogram_gate_layout = QVBoxLayout()
-        histogram_gate_layout.setContentsMargins(0, 0, 0, 0)
-        histogram_gate_layout.setSpacing(8)
-        histogram_gate_layout.addWidget(histogram_gate_button_widget)
-        histogram_gate_box.setLayout(histogram_gate_layout)
-
-        gate_actions_box = QGroupBox("Gate actions")
-        gate_actions_layout = QVBoxLayout()
-        gate_actions_layout.setSpacing(10)
-        gate_actions_layout.addWidget(self.create_gate_button)
-        gate_actions_layout.addWidget(self.apply_gate_button)
-        gate_actions_layout.addWidget(self.clear_gate_button)
-        gate_actions_box.setLayout(gate_actions_layout)
-
-        gate_form = QFormLayout()
-        gate_form.setVerticalSpacing(10)
-        gate_form.addRow("Gate name:", self.gate_name_edit)
-        gate_form.addRow("Gate color:", self.gate_color_button)
-        gate_layout.addWidget(visualization_box)
-        gate_layout.addWidget(gate_actions_box)
-        gate_layout.addWidget(scatter_gate_box)
-        gate_layout.addWidget(histogram_gate_box)
-        gate_layout.addLayout(gate_form)
-        gate_layout.addWidget(self.export_gate_button)
-        gate_layout.addStretch(1)
-        gate_controls_box.setLayout(gate_layout)
-
-        gate_scroll_area = QScrollArea()
-        gate_scroll_area.setWidgetResizable(True)
-        gate_scroll_area.setFrameShape(QScrollArea.Shape.NoFrame)
-        gate_scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        gate_scroll_area.setWidget(gate_controls_box)
-
-        self.mode_hint_label = QLabel(
-            "Gate concentra la visualizacion, los ejes y la edicion del gate activo."
-        )
-        self.mode_hint_label.setWordWrap(True)
+        view_scroll_area = QScrollArea()
+        view_scroll_area.setWidgetResizable(True)
+        view_scroll_area.setFrameShape(QScrollArea.Shape.NoFrame)
+        view_scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        view_scroll_area.setWidget(view_controls_box)
 
         self.statistics_population_combo = QComboBox()
         self.statistics_population_combo.setEnabled(False)
@@ -580,7 +503,7 @@ class InspectorPanel(QWidget):
         self.statistics_channel_combo.setEnabled(False)
         self.statistics_metric_list = QListWidget()
         self.statistics_metric_list.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
-        self.statistics_metric_list.setMinimumHeight(170)
+        self.statistics_metric_list.setMinimumHeight(120)
 
         for stat_key, stat_label in STATISTIC_DEFINITIONS:
             item = QListWidgetItem(stat_label)
@@ -594,6 +517,11 @@ class InspectorPanel(QWidget):
         self.export_statistics_button = QPushButton("Export statistics")
         self.export_statistics_button.setProperty("variant", "subtle")
         self.export_statistics_button.setEnabled(False)
+        self.batch_export_statistics_button = QPushButton("Batch export...")
+        self.batch_export_statistics_button.setProperty("variant", "subtle")
+        self.batch_export_statistics_button.setToolTip(
+            "Export statistics for multiple groups, populations, and channels at once"
+        )
 
         self.statistics_table = QTableWidget(0, 2)
         self.statistics_table.setHorizontalHeaderLabels(["Statistic", "Value"])
@@ -601,12 +529,31 @@ class InspectorPanel(QWidget):
         self.statistics_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.statistics_table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         self.statistics_table.setAlternatingRowColors(True)
-        self.statistics_table.setMinimumHeight(220)
+        self.statistics_table.setMinimumHeight(100)
         self.statistics_table.horizontalHeader().setStretchLastSection(True)
 
+        self.compensation_sample_combo = QComboBox()
+        self.compensation_sample_combo.setEnabled(False)
+        self.universal_negative_combo = QComboBox()
+        self.universal_negative_combo.setEnabled(False)
+        self.compensation_status_label = QLabel("Configure compensation controls from the Compensation group.")
+        self.compensation_status_label.setWordWrap(True)
+        self.assign_positive_button = QPushButton("Use active gate as positive")
+        self.assign_positive_button.setProperty("variant", "primary")
+        self.assign_negative_button = QPushButton("Use active gate as negative")
+        self.assign_negative_button.setProperty("variant", "subtle")
+        self.compensation_table = QTableWidget(0, 7)
+        self.compensation_table.setHorizontalHeaderLabels(
+            ["Sample", "Type", "Fluorochrome", "Primary channel", "Positive", "Negative", "Status"]
+        )
+        self.compensation_table.verticalHeader().setVisible(False)
+        self.compensation_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.compensation_table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        self.compensation_table.setAlternatingRowColors(True)
+        self.compensation_table.horizontalHeader().setStretchLastSection(True)
+
         self.controls_tabs = QTabWidget()
-        self.controls_tabs.addTab(gate_scroll_area, "Gate")
-        self.controls_tabs.addTab(plot_adjustments_box, "Ajustes de grafica")
+        self.controls_tabs.addTab(view_scroll_area, "View")
 
         statistics_box = QWidget()
         statistics_layout = QVBoxLayout()
@@ -626,6 +573,7 @@ class InspectorPanel(QWidget):
         statistics_metrics_layout.addWidget(self.statistics_metric_list)
         statistics_metrics_layout.addWidget(self.calculate_statistics_button)
         statistics_metrics_layout.addWidget(self.export_statistics_button)
+        statistics_metrics_layout.addWidget(self.batch_export_statistics_button)
         statistics_metrics_box.setLayout(statistics_metrics_layout)
 
         statistics_results_box = QGroupBox("Results")
@@ -639,15 +587,46 @@ class InspectorPanel(QWidget):
         statistics_layout.addStretch(1)
         statistics_box.setLayout(statistics_layout)
 
-        self.controls_tabs.addTab(statistics_box, "Statistics")
+        statistics_scroll_area = QScrollArea()
+        statistics_scroll_area.setWidgetResizable(True)
+        statistics_scroll_area.setFrameShape(QScrollArea.Shape.NoFrame)
+        statistics_scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        statistics_scroll_area.setWidget(statistics_box)
+
+        self.controls_tabs.addTab(statistics_scroll_area, "Statistics")
+
+        compensation_box = QWidget()
+        compensation_layout = QVBoxLayout()
+        compensation_layout.setContentsMargins(0, 0, 0, 0)
+        compensation_layout.setSpacing(12)
+
+        compensation_selection_box = QGroupBox("Compensation setup")
+        compensation_selection_form = QFormLayout()
+        compensation_selection_form.setVerticalSpacing(10)
+        compensation_selection_form.addRow("Control sample:", self.compensation_sample_combo)
+        compensation_selection_form.addRow("Universal negative:", self.universal_negative_combo)
+        compensation_selection_form.addRow("", self.assign_positive_button)
+        compensation_selection_form.addRow("", self.assign_negative_button)
+        compensation_selection_form.addRow("", self.compensation_status_label)
+        compensation_selection_box.setLayout(compensation_selection_form)
+
+        compensation_table_box = QGroupBox("Controls")
+        compensation_table_layout = QVBoxLayout()
+        compensation_table_layout.addWidget(self.compensation_table)
+        compensation_table_box.setLayout(compensation_table_layout)
+
+        compensation_layout.addWidget(compensation_selection_box)
+        compensation_layout.addWidget(compensation_table_box)
+        compensation_layout.addStretch(1)
+        compensation_box.setLayout(compensation_layout)
+
+        self.controls_tabs.addTab(compensation_box, "Compensation")
 
         layout = QVBoxLayout()
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(10)
         layout.addWidget(info_box)
         layout.addWidget(self.controls_tabs, stretch=1)
-        layout.addWidget(self.mode_hint_label)
-        layout.addStretch(1)
         self.setLayout(layout)
 
         self.plot_mode_combo.currentIndexChanged.connect(self._emit_plot_mode_changed)
@@ -667,17 +646,15 @@ class InspectorPanel(QWidget):
         self.apply_view_button.clicked.connect(self._emit_view_settings_changed)
         self.auto_range_button.clicked.connect(self._emit_auto_range_requested)
 
-        self.create_gate_button.clicked.connect(self.create_gate_requested.emit)
-        self.apply_gate_button.clicked.connect(self.apply_gate_requested.emit)
-        self.clear_gate_button.clicked.connect(self.clear_gate_requested.emit)
-        self.export_gate_button.clicked.connect(self.export_gate_requested.emit)
         self.calculate_statistics_button.clicked.connect(self.calculate_statistics_requested.emit)
         self.export_statistics_button.clicked.connect(self.export_statistics_requested.emit)
-        self.gate_name_edit.editingFinished.connect(self._emit_rename_gate_requested)
-        self.gate_color_button.clicked.connect(self.recolor_gate_requested.emit)
+        self.batch_export_statistics_button.clicked.connect(self.batch_export_statistics_requested.emit)
+        self.universal_negative_combo.currentIndexChanged.connect(self._emit_universal_negative_changed)
+        self.assign_positive_button.clicked.connect(self.assign_positive_population_requested.emit)
+        self.assign_negative_button.clicked.connect(self.assign_negative_population_requested.emit)
         self.set_plot_mode("scatter")
-        self.set_gate_editor_state(None, None)
         self.clear_statistics()
+        self.clear_compensation_setup()
 
     def set_file_info(
         self,
@@ -694,21 +671,6 @@ class InspectorPanel(QWidget):
 
     def set_active_gate(self, gate_name: str) -> None:
         self.active_gate_label.setText(gate_name)
-
-    def set_gate_editor_state(self, gate_name: str | None, color_hex: str | None) -> None:
-        is_enabled = gate_name is not None and color_hex is not None
-        with QSignalBlocker(self.gate_name_edit):
-            self.gate_name_edit.setText(gate_name or "")
-        self.gate_name_edit.setEnabled(is_enabled)
-        self.gate_color_button.setEnabled(is_enabled)
-
-        if color_hex is None:
-            self.gate_color_button.setStyleSheet("")
-            return
-
-        self.gate_color_button.setStyleSheet(
-            f"background-color: {color_hex}; color: white; font-weight: 600;"
-        )
 
     def set_channels(
         self,
@@ -820,18 +782,79 @@ class InspectorPanel(QWidget):
         self.statistics_table.setRowCount(0)
         self.export_statistics_button.setEnabled(False)
 
+    def set_compensation_samples(
+        self,
+        sample_options: list[tuple[str, int]],
+        *,
+        selected_sample_index: int | None = None,
+    ) -> None:
+        with QSignalBlocker(self.compensation_sample_combo):
+            self.compensation_sample_combo.clear()
+            for label, sample_index in sample_options:
+                self.compensation_sample_combo.addItem(label, sample_index)
+            has_options = len(sample_options) > 0
+            self.compensation_sample_combo.setEnabled(has_options)
+            self.assign_positive_button.setEnabled(has_options)
+            self.assign_negative_button.setEnabled(has_options)
+            if not has_options:
+                return
+            selected_index = 0
+            for combo_index in range(self.compensation_sample_combo.count()):
+                if self.compensation_sample_combo.itemData(combo_index) == selected_sample_index:
+                    selected_index = combo_index
+                    break
+            self.compensation_sample_combo.setCurrentIndex(selected_index)
+
+    def current_compensation_sample_index(self) -> int | None:
+        data = self.compensation_sample_combo.currentData()
+        return int(data) if data is not None else None
+
+    def set_universal_negative_samples(
+        self,
+        sample_options: list[tuple[str, int | None]],
+        *,
+        selected_sample_index: int | None = None,
+    ) -> None:
+        with QSignalBlocker(self.universal_negative_combo):
+            self.universal_negative_combo.clear()
+            for label, sample_index in sample_options:
+                self.universal_negative_combo.addItem(label, sample_index)
+            has_options = len(sample_options) > 0
+            self.universal_negative_combo.setEnabled(has_options)
+            if not has_options:
+                return
+            selected_index = 0
+            for combo_index in range(self.universal_negative_combo.count()):
+                if self.universal_negative_combo.itemData(combo_index) == selected_sample_index:
+                    selected_index = combo_index
+                    break
+            self.universal_negative_combo.setCurrentIndex(selected_index)
+
+    def set_compensation_rows(self, rows: list[tuple[str, ...]]) -> None:
+        self.compensation_table.setRowCount(len(rows))
+        for row_index, row_values in enumerate(rows):
+            for column_index, value in enumerate(row_values):
+                self.compensation_table.setItem(row_index, column_index, QTableWidgetItem(value))
+
+    def set_compensation_status(self, text: str) -> None:
+        self.compensation_status_label.setText(text)
+
+    def clear_compensation_setup(self) -> None:
+        with QSignalBlocker(self.compensation_sample_combo), QSignalBlocker(self.universal_negative_combo):
+            self.compensation_sample_combo.clear()
+            self.universal_negative_combo.clear()
+        self.compensation_sample_combo.setEnabled(False)
+        self.universal_negative_combo.setEnabled(False)
+        self.assign_positive_button.setEnabled(False)
+        self.assign_negative_button.setEnabled(False)
+        self.compensation_table.setRowCount(0)
+        self.compensation_status_label.setText("Configure compensation controls from the Compensation group.")
+
     def current_axes(self) -> tuple[int, int]:
         return self.x_axis_combo.currentIndex(), self.y_axis_combo.currentIndex()
 
     def current_plot_mode(self) -> str:
         return self._plot_mode
-
-    def current_scatter_gate_type(self) -> str:
-        if self.polygon_gate_button.isChecked():
-            return "polygon"
-        if self.circle_gate_button.isChecked():
-            return "circle"
-        return "rectangle"
 
     def set_plot_mode(self, mode: str) -> None:
         combo_index = self.plot_mode_combo.findData(mode)
@@ -840,24 +863,11 @@ class InspectorPanel(QWidget):
                 self.plot_mode_combo.setCurrentIndex(combo_index)
         self._plot_mode = mode
         if mode == "histogram":
-            self.rectangle_gate_button.setEnabled(False)
-            self.polygon_gate_button.setEnabled(False)
-            self.circle_gate_button.setEnabled(False)
-            self.histogram_range_button.setEnabled(True)
-            self.histogram_range_button.setChecked(True)
             self.y_axis_combo.setEnabled(False)
             self.y_scale_combo.setEnabled(False)
-            self.mode_hint_label.setText("Histogram mode enables only the 1D range gate.")
         else:
-            self.rectangle_gate_button.setEnabled(True)
-            self.polygon_gate_button.setEnabled(True)
-            self.circle_gate_button.setEnabled(True)
-            self.histogram_range_button.setEnabled(False)
             self.y_axis_combo.setEnabled(self.y_axis_combo.count() >= 2)
             self.y_scale_combo.setEnabled(True)
-            self.mode_hint_label.setText(
-                "Scatter mode enables rectangle, polygon and circle gates."
-            )
     def current_scales(self) -> tuple[str, str]:
         x_mode = str(self.x_scale_combo.currentData())
         y_mode = str(self.y_scale_combo.currentData())
@@ -924,8 +934,8 @@ class InspectorPanel(QWidget):
         del args
         self.auto_range_requested.emit()
 
-    def _emit_rename_gate_requested(self) -> None:
-        self.rename_gate_requested.emit(self.gate_name_edit.text())
+    def _emit_universal_negative_changed(self) -> None:
+        self.universal_negative_changed.emit(self.universal_negative_combo.currentData())
 
     @staticmethod
     def _parse_optional_float(text: str) -> float | None:

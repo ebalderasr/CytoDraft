@@ -40,12 +40,26 @@ class CompensationSampleMetadata:
 
 
 @dataclass(slots=True)
+class CompensationPopulationSelection:
+    sample_index: int | None = None
+    population_name: str = ""
+
+    @property
+    def is_configured(self) -> bool:
+        return self.sample_index is not None and bool(self.population_name.strip())
+
+
+@dataclass(slots=True)
 class WorkspaceSample:
     sample: SampleData
     group_name: str = DEFAULT_GROUP_NAME
     gates: list[GateModel] = field(default_factory=list)
     active_gate_name: str | None = None
     compensation: CompensationSampleMetadata = field(default_factory=CompensationSampleMetadata)
+    compensation_positive: CompensationPopulationSelection = field(default_factory=CompensationPopulationSelection)
+    compensation_negative: CompensationPopulationSelection = field(default_factory=CompensationPopulationSelection)
+    use_universal_negative: bool = False
+    keywords: dict[str, str] = field(default_factory=dict)
 
     @property
     def display_name(self) -> str:
@@ -60,6 +74,18 @@ class WorkspaceState:
     samples: list[WorkspaceSample] = field(default_factory=list)
     groups: dict[str, WorkspaceGroup] = field(default_factory=dict)
     active_sample_index: int | None = None
+    universal_negative_sample_index: int | None = None
+    keyword_columns: list[str] = field(default_factory=list)
+
+    def add_keyword_column(self, name: str) -> None:
+        if name not in self.keyword_columns:
+            self.keyword_columns.append(name)
+
+    def remove_keyword_column(self, name: str) -> None:
+        if name in self.keyword_columns:
+            self.keyword_columns.remove(name)
+            for ws in self.samples:
+                ws.keywords.pop(name, None)
 
     def __post_init__(self) -> None:
         self.ensure_group(COMPENSATION_GROUP_NAME).color_hex = COMPENSATION_GROUP_COLOR
@@ -82,6 +108,19 @@ class WorkspaceState:
 
     def remove_sample(self, index: int) -> WorkspaceSample:
         removed = self.samples.pop(index)
+        if self.universal_negative_sample_index == index:
+            self.universal_negative_sample_index = None
+        elif self.universal_negative_sample_index is not None and self.universal_negative_sample_index > index:
+            self.universal_negative_sample_index -= 1
+
+        for sample in self.samples:
+            for selection in (sample.compensation_positive, sample.compensation_negative):
+                if selection.sample_index == index:
+                    selection.sample_index = None
+                    selection.population_name = ""
+                elif selection.sample_index is not None and selection.sample_index > index:
+                    selection.sample_index -= 1
+
         if not self.samples:
             self.active_sample_index = None
         elif self.active_sample_index is None:
@@ -131,3 +170,6 @@ class WorkspaceState:
             for index, sample in enumerate(self.samples)
             if sample.group_name == group_name
         ]
+
+    def compensation_samples(self) -> list[tuple[int, WorkspaceSample]]:
+        return self.samples_in_group(COMPENSATION_GROUP_NAME)

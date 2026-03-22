@@ -120,6 +120,34 @@ def test_assign_sample_group_updates_workspace_and_list() -> None:
     assert window.sample_panel.sample_list.item(0).text() == "demo.fcs"
 
 
+def test_load_sample_can_target_compensation_group() -> None:
+    get_app()
+    window = MainWindow()
+    sample = make_sample("comp.fcs")
+    window.sample_service.load_sample = lambda _: sample
+
+    window.load_sample("comp.fcs", group_name="Compensation")
+
+    assert window.workspace.samples[0].group_name == "Compensation"
+    assert window.selected_group_name == "Compensation"
+    assert "Compensation" in window.workspace.groups
+
+
+def test_assign_sample_group_accepts_compensation() -> None:
+    get_app()
+    window = MainWindow()
+    sample = make_sample("demo.fcs")
+
+    window.workspace.add_sample(sample)
+    window._sync_from_workspace()
+    window._refresh_group_list()
+    window._refresh_sample_list(select_active=True)
+
+    window.on_assign_sample_group(0, "Compensation")
+
+    assert window.workspace.samples[0].group_name == "Compensation"
+
+
 def test_group_selection_filters_visible_samples() -> None:
     get_app()
     window = MainWindow()
@@ -186,6 +214,24 @@ def test_sample_details_show_compensation_metadata() -> None:
     assert "PE" in window.sample_panel.sample_details_label.text()
     assert "SSC-A" in window.sample_panel.sample_details_label.text()
     assert "Bright control" in window.sample_panel.sample_details_label.text()
+
+
+def test_compensation_setup_table_shows_compensation_samples() -> None:
+    get_app()
+    window = MainWindow()
+    sample_state = window.workspace.add_sample(make_sample("fitc_control.fcs"), group_name="Compensation")
+    sample_state.compensation.fluorochrome = "FITC"
+    sample_state.compensation.target_channel = "FSC-A"
+    sample_state.compensation_positive.sample_index = 0
+    sample_state.compensation_positive.population_name = "Positive gate"
+    sample_state.compensation_negative.sample_index = 0
+    sample_state.compensation_negative.population_name = "Negative gate"
+    window._refresh_compensation_setup()
+
+    assert window.inspector_panel.compensation_table.rowCount() == 1
+    assert window.inspector_panel.compensation_table.item(0, 0).text() == "fitc_control.fcs"
+    assert window.inspector_panel.compensation_table.item(0, 2).text() == "FITC"
+    assert "Positive gate" in window.inspector_panel.compensation_table.item(0, 4).text()
 
 
 def test_apply_active_gate_to_group_copies_gate_to_matching_group() -> None:
@@ -421,10 +467,11 @@ def test_main_window_uses_compact_inspector_layout() -> None:
     assert window.sample_panel.minimumWidth() == 0
     assert window.inspector_panel.minimumWidth() == 0
     assert isinstance(window.inspector_panel.controls_tabs, QTabWidget)
-    assert window.inspector_panel.controls_tabs.count() == 3
+    assert window.inspector_panel.controls_tabs.count() == 4
     assert window.inspector_panel.controls_tabs.tabText(0) == "Gate"
     assert window.inspector_panel.controls_tabs.tabText(1) == "Ajustes de grafica"
     assert window.inspector_panel.controls_tabs.tabText(2) == "Statistics"
+    assert window.inspector_panel.controls_tabs.tabText(3) == "Compensation"
     gate_tab = window.inspector_panel.controls_tabs.widget(0)
     assert isinstance(gate_tab, QScrollArea)
     gate_layout = gate_tab.widget().layout()

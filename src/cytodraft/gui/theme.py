@@ -148,6 +148,43 @@ QStatusBar {
     border-top: 1px solid #d9e2ec;
 }
 
+QToolBar {
+    background: #ffffff;
+    border-bottom: 1px solid #d9e2ec;
+    padding: 4px 8px;
+    spacing: 4px;
+}
+
+QToolBar::separator {
+    background: #d9e2ec;
+    width: 1px;
+    margin: 4px 6px;
+}
+
+QToolBar QToolButton {
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    padding: 6px 12px;
+    font-weight: 600;
+    color: #1f2937;
+}
+
+QToolBar QToolButton:hover {
+    background: #e7edf5;
+    border-color: #d9e2ec;
+}
+
+QToolBar QToolButton:pressed {
+    background: #d9e2ec;
+}
+
+QToolBar QToolButton:checked {
+    background: #dbeafe;
+    color: #1d4ed8;
+    border-color: #93c5fd;
+}
+
 QMenu {
     background: #ffffff;
     border: 1px solid #d1d5db;

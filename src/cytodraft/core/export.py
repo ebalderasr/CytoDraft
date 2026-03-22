@@ -70,6 +70,30 @@ def export_masked_events_to_fcs(
     return output
 
 
+def export_batch_statistics_to_csv(
+    rows: list[dict],
+    output_path: str | Path,
+) -> Path:
+    """Export a batch of statistics rows to CSV.
+
+    Each row dict must have keys: group, sample, population, channel,
+    statistic_key, statistic_label, value.
+    """
+    output = Path(output_path)
+    col_order = [
+        "group",
+        "sample",
+        "population",
+        "channel",
+        "statistic_key",
+        "statistic_label",
+        "value",
+    ]
+    df = pd.DataFrame(rows, columns=col_order)
+    df.to_csv(output, index=False)
+    return output
+
+
 def export_population_statistics_to_csv(
     *,
     sample_name: str,
