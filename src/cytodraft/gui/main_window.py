@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import numpy as np
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import QFileDialog, QMainWindow, QMessageBox, QSplitter
@@ -23,6 +24,8 @@ class MainWindow(QMainWindow):
         self.sample_service = SampleService()
         self.current_sample: SampleData | None = None
         self.gates: list[RectangleGate] = []
+        self.active_gate: RectangleGate | None = None
+        self.active_gate_mask: np.ndarray | None = None
 
         self.sample_panel = SamplePanel()
         self.plot_panel = CytometryPlotWidget()
@@ -105,6 +108,8 @@ class MainWindow(QMainWindow):
 
         self.current_sample = sample
         self.gates = []
+        self.active_gate = None
+        self.active_gate_mask = None
 
         self.sample_panel.add_sample(sample.file_name)
         self.sample_panel.clear_gates()
@@ -147,7 +152,20 @@ class MainWindow(QMainWindow):
 
         self.plot_axes(x_idx, y_idx)
 
-    def plot_axes(self, x_idx: int, y_idx: int) -> None:
+    def _selected_mask_for_axes(self, x_idx: int, y_idx: int) -> np.ndarray | None:
+        if self.active_gate is None or self.active_gate_mask is None:
+            return None
+
+        same_axes = (
+            self.active_gate.x_channel_index == x_idx
+            and self.active_gate.y_channel_index == y_idx
+        )
+        if not same_axes:
+            return None
+
+        return self.active_gate_mask
+
+    def plot_axes(self, x_idx: int, y_idx: int, *, show_status: bool = True) -> None:
         if self.current_sample is None:
             return
 
@@ -166,6 +184,7 @@ class MainWindow(QMainWindow):
 
         limit_enabled, max_points = self.inspector_panel.sampling_settings()
         display_limit = max_points if limit_enabled else None
+        selected_mask = self._selected_mask_for_axes(x_idx, y_idx)
 
         displayed_count, total_count = self.plot_panel.plot_scatter(
             x,
@@ -174,19 +193,20 @@ class MainWindow(QMainWindow):
             y_label,
             title=f"{sample.file_name} | {y_label} vs {x_label}",
             max_points=display_limit,
+            selected_mask=selected_mask,
         )
 
         self.inspector_panel.set_displayed_points(displayed_count, total_count)
 
-        suffix = f"{displayed_count:,}/{total_count:,} displayed"
-        self.statusBar().showMessage(
-            f"Viewing {sample.file_name} | X: {x_label} | Y: {y_label} | {suffix}",
-            4000,
-        )
+        if show_status:
+            suffix = f"{displayed_count:,}/{total_count:,} displayed"
+            self.statusBar().showMessage(
+                f"Viewing {sample.file_name} | X: {x_label} | Y: {y_label} | {suffix}",
+                4000,
+            )
 
     def on_axes_changed(self, x_idx: int, y_idx: int) -> None:
         self.plot_axes(x_idx, y_idx)
-        self.inspector_panel.set_active_gate("None")
 
     def on_sampling_changed(self, enabled: bool, max_points: int) -> None:
         del enabled, max_points
@@ -204,7 +224,10 @@ class MainWindow(QMainWindow):
             return
 
         self.inspector_panel.set_active_gate("Draft rectangle")
-        self.statusBar().showMessage("Rectangle gate created. Resize and move it, then click Apply gate.", 5000)
+        self.statusBar().showMessage(
+            "Rectangle gate created. Resize and move it, then click Apply gate.",
+            5000,
+        )
 
     def on_apply_gate(self) -> None:
         if self.current_sample is None:
@@ -252,8 +275,13 @@ class MainWindow(QMainWindow):
         )
 
         self.gates.append(gate)
+        self.active_gate = gate
+        self.active_gate_mask = mask
+
         self.sample_panel.add_gate(gate.label)
         self.inspector_panel.set_active_gate(gate.name)
+
+        self.plot_axes(x_idx, y_idx, show_status=False)
 
         self.statusBar().showMessage(
             f"Applied {gate.name}: {event_count:,} / {total:,} events ({percentage_total:.2f}%)",
@@ -262,7 +290,8 @@ class MainWindow(QMainWindow):
 
     def on_clear_draft_gate(self) -> None:
         self.plot_panel.clear_rectangle_roi()
-        self.inspector_panel.set_active_gate("None")
+        if self.active_gate is None:
+            self.inspector_panel.set_active_gate("None")
         self.statusBar().showMessage("Draft rectangle gate cleared", 4000)
 
     def show_about_dialog(self) -> None:

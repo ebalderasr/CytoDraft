@@ -22,14 +22,16 @@ class CytometryPlotWidget(QWidget):
         layout.addWidget(self.plot_widget)
         self.setLayout(layout)
 
-        self._scatter_item: pg.ScatterPlotItem | None = None
+        self._base_scatter_item: pg.ScatterPlotItem | None = None
+        self._highlight_scatter_item: pg.ScatterPlotItem | None = None
         self._rect_roi: pg.RectROI | None = None
 
         self.show_placeholder_data()
 
     def clear_plot(self) -> None:
         self.plot_widget.clear()
-        self._scatter_item = None
+        self._base_scatter_item = None
+        self._highlight_scatter_item = None
         self._rect_roi = None
 
     def show_placeholder_data(self) -> None:
@@ -40,7 +42,8 @@ class CytometryPlotWidget(QWidget):
 
     def show_empty_message(self, title: str = "No data loaded") -> None:
         self.plot_widget.clear()
-        self._scatter_item = None
+        self._base_scatter_item = None
+        self._highlight_scatter_item = None
         self._rect_roi = None
         self.plot_widget.setTitle(title)
         self.plot_widget.setLabel("bottom", "")
@@ -51,15 +54,16 @@ class CytometryPlotWidget(QWidget):
         x: np.ndarray,
         y: np.ndarray,
         max_points: int | None,
-    ) -> tuple[np.ndarray, np.ndarray, int, int]:
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, int]:
         total = len(x)
 
         if max_points is None or total <= max_points:
-            return x, y, total, total
+            indices = np.arange(total, dtype=int)
+            return x, y, indices, total
 
         rng = np.random.default_rng(42)
         indices = rng.choice(total, size=max_points, replace=False)
-        return x[indices], y[indices], max_points, total
+        return x[indices], y[indices], indices, total
 
     def plot_scatter(
         self,
@@ -70,11 +74,15 @@ class CytometryPlotWidget(QWidget):
         *,
         title: str | None = None,
         max_points: int | None = None,
+        selected_mask: np.ndarray | None = None,
     ) -> tuple[int, int]:
-        x_plot, y_plot, displayed_count, total_count = self._downsample(x, y, max_points)
+        x_plot, y_plot, display_indices, total_count = self._downsample(x, y, max_points)
+        displayed_count = len(display_indices)
 
         self.plot_widget.clear()
         self._rect_roi = None
+        self._base_scatter_item = None
+        self._highlight_scatter_item = None
 
         self.plot_widget.setLabel("bottom", x_label)
         self.plot_widget.setLabel("left", y_label)
@@ -84,16 +92,31 @@ class CytometryPlotWidget(QWidget):
             plot_title = f"{plot_title} (showing {displayed_count:,} / {total_count:,})"
         self.plot_widget.setTitle(plot_title)
 
-        self._scatter_item = pg.ScatterPlotItem(
+        self._base_scatter_item = pg.ScatterPlotItem(
             x=x_plot,
             y=y_plot,
             size=4,
             pen=None,
-            brush=(50, 100, 180, 120),
+            brush=(70, 110, 190, 90),
         )
-        self.plot_widget.addItem(self._scatter_item)
-        self.plot_widget.enableAutoRange()
+        self.plot_widget.addItem(self._base_scatter_item)
 
+        if selected_mask is not None and len(selected_mask) == total_count:
+            selected_display_mask = selected_mask[display_indices]
+            if np.any(selected_display_mask):
+                x_sel = x_plot[selected_display_mask]
+                y_sel = y_plot[selected_display_mask]
+
+                self._highlight_scatter_item = pg.ScatterPlotItem(
+                    x=x_sel,
+                    y=y_sel,
+                    size=5,
+                    pen=pg.mkPen((180, 40, 40, 220), width=1),
+                    brush=(255, 140, 0, 180),
+                )
+                self.plot_widget.addItem(self._highlight_scatter_item)
+
+        self.plot_widget.enableAutoRange()
         return displayed_count, total_count
 
     def create_rectangle_roi(self) -> bool:
