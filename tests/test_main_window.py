@@ -1,10 +1,12 @@
 from pathlib import Path
 
 import numpy as np
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox, QScrollArea, QSplitter, QTabWidget
 
 from cytodraft.gui.main_window import MainWindow
+from cytodraft.core.statistics import StatisticResult
 from cytodraft.models.gate import RangeGate
 from cytodraft.models.sample import ChannelInfo, SampleData
 
@@ -250,9 +252,10 @@ def test_main_window_uses_compact_inspector_layout() -> None:
     assert window.sample_panel.minimumWidth() == 0
     assert window.inspector_panel.minimumWidth() == 0
     assert isinstance(window.inspector_panel.controls_tabs, QTabWidget)
-    assert window.inspector_panel.controls_tabs.count() == 2
+    assert window.inspector_panel.controls_tabs.count() == 3
     assert window.inspector_panel.controls_tabs.tabText(0) == "Gate"
     assert window.inspector_panel.controls_tabs.tabText(1) == "Ajustes de grafica"
+    assert window.inspector_panel.controls_tabs.tabText(2) == "Statistics"
     gate_tab = window.inspector_panel.controls_tabs.widget(0)
     assert isinstance(gate_tab, QScrollArea)
     gate_layout = gate_tab.widget().layout()
@@ -342,6 +345,75 @@ def test_create_gate_button_click_creates_scatter_roi() -> None:
 
     assert window.plot_panel._rect_roi is not None
     assert window.statusBar().currentMessage() == "Gate ROI created. Adjust it and then click Apply gate."
+
+
+def test_statistics_tab_calculates_population_metrics() -> None:
+    get_app()
+    window = MainWindow()
+    sample = make_sample("demo.fcs")
+    gate = RangeGate(
+        name="Gate 1",
+        parent_name="All events",
+        channel_index=0,
+        channel_label="FSC-A",
+        x_min=0.0,
+        x_max=3.0,
+        event_count=2,
+        percentage_parent=50.0,
+        percentage_total=50.0,
+        full_mask=np.array([True, True, False, False]),
+    )
+
+    window.current_sample = sample
+    window.gates = [gate]
+    window.active_gate = gate
+    window._update_inspector(sample)
+    window._configure_axis_selectors(sample)
+    window._refresh_statistics_population_options()
+    window.inspector_panel.set_statistics_populations([("All events", None), ("Gate 1", 0)], selected_gate_index=0)
+    window.inspector_panel.set_statistics_channels(["FSC-A", "SSC-A"], selected_channel_index=0)
+
+    for row in range(window.inspector_panel.statistics_metric_list.count()):
+        item = window.inspector_panel.statistics_metric_list.item(row)
+        item.setCheckState(Qt.Unchecked)
+    window.inspector_panel.statistics_metric_list.item(0).setCheckState(Qt.Checked)
+    window.inspector_panel.statistics_metric_list.item(3).setCheckState(Qt.Checked)
+
+    window.on_calculate_statistics()
+
+    assert window.inspector_panel.statistics_table.rowCount() == 2
+    assert window.inspector_panel.statistics_table.item(0, 0).text() == "Event count"
+    assert window.inspector_panel.statistics_table.item(0, 1).text() == "2"
+    assert window.inspector_panel.statistics_table.item(1, 0).text() == "Mean"
+    assert window.inspector_panel.statistics_table.item(1, 1).text() == "1.0000"
+
+
+def test_export_statistics_uses_csv_export(monkeypatch) -> None:
+    get_app()
+    window = MainWindow()
+    sample = make_sample("demo.fcs")
+
+    window.current_sample = sample
+    window._latest_statistics_population_name = "All events"
+    window._latest_statistics_channel_name = "FSC-A"
+    window._latest_statistics = [StatisticResult(key="mean", label="Mean", value=3.5)]
+
+    monkeypatch.setattr(
+        QFileDialog,
+        "getSaveFileName",
+        lambda *args, **kwargs: ("stats_export.csv", "CSV files (*.csv)"),
+    )
+
+    calls: list[str] = []
+
+    monkeypatch.setattr(
+        "cytodraft.gui.main_window.export_population_statistics_to_csv",
+        lambda **kwargs: calls.append(kwargs["population_name"]) or Path("stats_export.csv"),
+    )
+
+    window.on_export_statistics()
+
+    assert calls == ["All events"]
 
 
 def test_export_active_gate_uses_fcs_export_for_fcs_extension(monkeypatch) -> None:

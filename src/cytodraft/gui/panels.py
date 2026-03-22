@@ -3,6 +3,7 @@ from __future__ import annotations
 from PySide6.QtCore import QSignalBlocker, Qt, Signal
 from PySide6.QtGui import QColor, QDoubleValidator
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QButtonGroup,
     QCheckBox,
     QComboBox,
@@ -17,10 +18,14 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSizePolicy,
     QSpinBox,
+    QTableWidget,
+    QTableWidgetItem,
     QTabWidget,
     QVBoxLayout,
     QWidget,
 )
+
+from cytodraft.core.statistics import STATISTIC_DEFINITIONS
 
 
 class SamplePanel(QWidget):
@@ -157,6 +162,8 @@ class InspectorPanel(QWidget):
     apply_gate_requested = Signal()
     clear_gate_requested = Signal()
     export_gate_requested = Signal()
+    calculate_statistics_requested = Signal()
+    export_statistics_requested = Signal()
     rename_gate_requested = Signal(str)
     recolor_gate_requested = Signal()
 
@@ -371,9 +378,72 @@ class InspectorPanel(QWidget):
         )
         self.mode_hint_label.setWordWrap(True)
 
+        self.statistics_population_combo = QComboBox()
+        self.statistics_population_combo.setEnabled(False)
+        self.statistics_channel_combo = QComboBox()
+        self.statistics_channel_combo.setEnabled(False)
+        self.statistics_metric_list = QListWidget()
+        self.statistics_metric_list.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        self.statistics_metric_list.setMinimumHeight(170)
+
+        for stat_key, stat_label in STATISTIC_DEFINITIONS:
+            item = QListWidgetItem(stat_label)
+            item.setData(Qt.UserRole, stat_key)
+            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+            item.setCheckState(Qt.Checked if stat_key in {"event_count", "percent_parent", "mean", "median"} else Qt.Unchecked)
+            self.statistics_metric_list.addItem(item)
+
+        self.calculate_statistics_button = QPushButton("Calculate statistics")
+        self.calculate_statistics_button.setProperty("variant", "primary")
+        self.export_statistics_button = QPushButton("Export statistics")
+        self.export_statistics_button.setProperty("variant", "subtle")
+        self.export_statistics_button.setEnabled(False)
+
+        self.statistics_table = QTableWidget(0, 2)
+        self.statistics_table.setHorizontalHeaderLabels(["Statistic", "Value"])
+        self.statistics_table.verticalHeader().setVisible(False)
+        self.statistics_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.statistics_table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        self.statistics_table.setAlternatingRowColors(True)
+        self.statistics_table.setMinimumHeight(220)
+        self.statistics_table.horizontalHeader().setStretchLastSection(True)
+
         self.controls_tabs = QTabWidget()
         self.controls_tabs.addTab(gate_scroll_area, "Gate")
         self.controls_tabs.addTab(plot_adjustments_box, "Ajustes de grafica")
+
+        statistics_box = QWidget()
+        statistics_layout = QVBoxLayout()
+        statistics_layout.setContentsMargins(0, 0, 0, 0)
+        statistics_layout.setSpacing(12)
+
+        statistics_selection_box = QGroupBox("Statistics selection")
+        statistics_selection_form = QFormLayout()
+        statistics_selection_form.setVerticalSpacing(10)
+        statistics_selection_form.addRow("Population:", self.statistics_population_combo)
+        statistics_selection_form.addRow("Channel:", self.statistics_channel_combo)
+        statistics_selection_box.setLayout(statistics_selection_form)
+
+        statistics_metrics_box = QGroupBox("Statistics")
+        statistics_metrics_layout = QVBoxLayout()
+        statistics_metrics_layout.setSpacing(10)
+        statistics_metrics_layout.addWidget(self.statistics_metric_list)
+        statistics_metrics_layout.addWidget(self.calculate_statistics_button)
+        statistics_metrics_layout.addWidget(self.export_statistics_button)
+        statistics_metrics_box.setLayout(statistics_metrics_layout)
+
+        statistics_results_box = QGroupBox("Results")
+        statistics_results_layout = QVBoxLayout()
+        statistics_results_layout.addWidget(self.statistics_table)
+        statistics_results_box.setLayout(statistics_results_layout)
+
+        statistics_layout.addWidget(statistics_selection_box)
+        statistics_layout.addWidget(statistics_metrics_box)
+        statistics_layout.addWidget(statistics_results_box)
+        statistics_layout.addStretch(1)
+        statistics_box.setLayout(statistics_layout)
+
+        self.controls_tabs.addTab(statistics_box, "Statistics")
 
         layout = QVBoxLayout()
         layout.setContentsMargins(0, 0, 0, 0)
@@ -404,10 +474,13 @@ class InspectorPanel(QWidget):
         self.apply_gate_button.clicked.connect(self.apply_gate_requested.emit)
         self.clear_gate_button.clicked.connect(self.clear_gate_requested.emit)
         self.export_gate_button.clicked.connect(self.export_gate_requested.emit)
+        self.calculate_statistics_button.clicked.connect(self.calculate_statistics_requested.emit)
+        self.export_statistics_button.clicked.connect(self.export_statistics_requested.emit)
         self.gate_name_edit.editingFinished.connect(self._emit_rename_gate_requested)
         self.gate_color_button.clicked.connect(self.recolor_gate_requested.emit)
         self.set_plot_mode("scatter")
         self.set_gate_editor_state(None, None)
+        self.clear_statistics()
 
     def set_file_info(
         self,
@@ -475,6 +548,80 @@ class InspectorPanel(QWidget):
             self.y_axis_combo.clear()
             self.x_axis_combo.setEnabled(False)
             self.y_axis_combo.setEnabled(False)
+        with QSignalBlocker(self.statistics_channel_combo):
+            self.statistics_channel_combo.clear()
+            self.statistics_channel_combo.setEnabled(False)
+
+    def set_statistics_populations(
+        self,
+        population_options: list[tuple[str, int | None]],
+        *,
+        selected_gate_index: int | None = None,
+    ) -> None:
+        with QSignalBlocker(self.statistics_population_combo):
+            self.statistics_population_combo.clear()
+            for label, gate_index in population_options:
+                self.statistics_population_combo.addItem(label, gate_index)
+
+            has_options = len(population_options) > 0
+            self.statistics_population_combo.setEnabled(has_options)
+            if not has_options:
+                return
+
+            selected_index = 0
+            for combo_index in range(self.statistics_population_combo.count()):
+                if self.statistics_population_combo.itemData(combo_index) == selected_gate_index:
+                    selected_index = combo_index
+                    break
+            self.statistics_population_combo.setCurrentIndex(selected_index)
+
+    def set_statistics_channels(
+        self,
+        channel_names: list[str],
+        *,
+        selected_channel_index: int | None = None,
+    ) -> None:
+        with QSignalBlocker(self.statistics_channel_combo):
+            self.statistics_channel_combo.clear()
+            self.statistics_channel_combo.addItems(channel_names)
+            has_channels = len(channel_names) > 0
+            self.statistics_channel_combo.setEnabled(has_channels)
+            if not has_channels:
+                return
+
+            resolved_index = 0 if selected_channel_index is None else selected_channel_index
+            self.statistics_channel_combo.setCurrentIndex(max(0, min(resolved_index, len(channel_names) - 1)))
+
+    def current_statistics_population_index(self) -> int | None:
+        data = self.statistics_population_combo.currentData()
+        return int(data) if data is not None else None
+
+    def current_statistics_channel_index(self) -> int:
+        return self.statistics_channel_combo.currentIndex()
+
+    def selected_statistics(self) -> list[str]:
+        selected: list[str] = []
+        for row in range(self.statistics_metric_list.count()):
+            item = self.statistics_metric_list.item(row)
+            if item.checkState() == Qt.Checked:
+                selected.append(str(item.data(Qt.UserRole)))
+        return selected
+
+    def set_statistics_results(self, rows: list[tuple[str, str]]) -> None:
+        self.statistics_table.setRowCount(len(rows))
+        for row_index, (label, value) in enumerate(rows):
+            self.statistics_table.setItem(row_index, 0, QTableWidgetItem(label))
+            self.statistics_table.setItem(row_index, 1, QTableWidgetItem(value))
+        self.export_statistics_button.setEnabled(len(rows) > 0)
+
+    def clear_statistics(self) -> None:
+        with QSignalBlocker(self.statistics_population_combo), QSignalBlocker(self.statistics_channel_combo):
+            self.statistics_population_combo.clear()
+            self.statistics_channel_combo.clear()
+        self.statistics_population_combo.setEnabled(False)
+        self.statistics_channel_combo.setEnabled(False)
+        self.statistics_table.setRowCount(0)
+        self.export_statistics_button.setEnabled(False)
 
     def current_axes(self) -> tuple[int, int]:
         return self.x_axis_combo.currentIndex(), self.y_axis_combo.currentIndex()

@@ -12,7 +12,11 @@ from PySide6.QtWidgets import (
     QSplitter,
 )
 
-from cytodraft.core.export import export_masked_events_to_csv, export_masked_events_to_fcs
+from cytodraft.core.export import (
+    export_masked_events_to_csv,
+    export_masked_events_to_fcs,
+    export_population_statistics_to_csv,
+)
 from cytodraft.core.fcs_reader import choose_default_axes
 from cytodraft.core.gating import (
     circle_mask_from_parent,
@@ -20,6 +24,7 @@ from cytodraft.core.gating import (
     rectangle_mask_from_parent,
     range_mask_from_parent,
 )
+from cytodraft.core.statistics import StatisticResult, calculate_population_statistics
 from cytodraft.core.transforms import apply_scale, axis_label
 from cytodraft.gui.panels import InspectorPanel, SamplePanel
 from cytodraft.gui.plot_widget import CytometryPlotWidget
@@ -46,6 +51,9 @@ class MainWindow(QMainWindow):
         self.current_sample: SampleData | None = None
         self.gates: list[RectangleGate | RangeGate | PolygonGate | CircleGate] = []
         self.active_gate: RectangleGate | RangeGate | PolygonGate | CircleGate | None = None
+        self._latest_statistics: list[StatisticResult] = []
+        self._latest_statistics_population_name = ""
+        self._latest_statistics_channel_name = ""
 
         self.sample_panel = SamplePanel()
         self.plot_panel = CytometryPlotWidget()
@@ -115,6 +123,8 @@ class MainWindow(QMainWindow):
         self.inspector_panel.apply_gate_requested.connect(self.on_apply_gate)
         self.inspector_panel.clear_gate_requested.connect(self.on_clear_draft_gate)
         self.inspector_panel.export_gate_requested.connect(self.on_export_active_gate)
+        self.inspector_panel.calculate_statistics_requested.connect(self.on_calculate_statistics)
+        self.inspector_panel.export_statistics_requested.connect(self.on_export_statistics)
         self.inspector_panel.rename_gate_requested.connect(self.on_rename_active_gate)
         self.inspector_panel.recolor_gate_requested.connect(self.on_recolor_active_gate)
 
@@ -147,6 +157,7 @@ class MainWindow(QMainWindow):
         self.current_sample = sample
         self.gates = []
         self.active_gate = None
+        self._clear_statistics_results()
 
         self.sample_panel.reset_samples()
         self.sample_panel.add_sample(sample.file_name)
@@ -179,6 +190,63 @@ class MainWindow(QMainWindow):
             x_idx, y_idx = 0, 0
 
         self.inspector_panel.set_channels(channel_names, x_index=x_idx, y_index=y_idx)
+        self.inspector_panel.set_statistics_channels(channel_names, selected_channel_index=x_idx)
+        self._refresh_statistics_population_options()
+
+    def _refresh_statistics_population_options(self) -> None:
+        if self.current_sample is None:
+            self.inspector_panel.clear_statistics()
+            self._clear_statistics_results()
+            return
+
+        population_options: list[tuple[str, int | None]] = [("All events", None)]
+        for index, gate in enumerate(self.gates):
+            population_options.append((gate.name, index))
+
+        selected_gate_index = self.gates.index(self.active_gate) if self.active_gate in self.gates else None
+        self.inspector_panel.set_statistics_populations(
+            population_options,
+            selected_gate_index=selected_gate_index,
+        )
+
+    def _clear_statistics_results(self) -> None:
+        self._latest_statistics = []
+        self._latest_statistics_population_name = ""
+        self._latest_statistics_channel_name = ""
+        self.inspector_panel.set_statistics_results([])
+
+    def _population_from_statistics_selection(
+        self,
+    ) -> tuple[str, np.ndarray, np.ndarray | None] | None:
+        if self.current_sample is None:
+            return None
+
+        gate_index = self.inspector_panel.current_statistics_population_index()
+        if gate_index is None:
+            return (
+                "All events",
+                np.ones(self.current_sample.event_count, dtype=bool),
+                np.ones(self.current_sample.event_count, dtype=bool),
+            )
+
+        if gate_index < 0 or gate_index >= len(self.gates):
+            return None
+
+        gate = self.gates[gate_index]
+        parent_mask = self._mask_for_population_name(gate.parent_name)
+        return gate.name, gate.full_mask, parent_mask
+
+    def _mask_for_population_name(self, population_name: str) -> np.ndarray | None:
+        if self.current_sample is None:
+            return None
+
+        if population_name == "All events":
+            return np.ones(self.current_sample.event_count, dtype=bool)
+
+        for gate in self.gates:
+            if gate.name == population_name:
+                return gate.full_mask
+        return None
 
     def current_population_mask(self) -> np.ndarray | None:
         if self.current_sample is None:
@@ -210,6 +278,8 @@ class MainWindow(QMainWindow):
         self.inspector_panel.set_displayed_points(None, None)
         self.inspector_panel.set_gate_editor_state(None, None)
         self.inspector_panel.clear_channels()
+        self.inspector_panel.clear_statistics()
+        self._clear_statistics_results()
         self.plot_panel.clear_all_rois()
         self.plot_panel.show_placeholder_data()
 
@@ -408,6 +478,8 @@ class MainWindow(QMainWindow):
                 self.active_gate.name,
                 self.active_gate.color_hex,
             )
+
+        self._refresh_statistics_population_options()
 
         self.redraw_current_plot(show_status=False)
 
@@ -798,6 +870,8 @@ class MainWindow(QMainWindow):
         gate: RectangleGate | RangeGate | PolygonGate | CircleGate,
     ) -> None:
         self.gates.append(gate)
+        self._clear_statistics_results()
+        self._refresh_statistics_population_options()
         self.sample_panel.add_gate(gate.label, select=False)
         self.sample_panel.update_gate(len(self.gates) - 1, gate.label, gate.color_hex)
         new_row = len(self.gates)
@@ -827,6 +901,8 @@ class MainWindow(QMainWindow):
             self.active_gate.name,
             self.active_gate.color_hex,
         )
+        self._clear_statistics_results()
+        self._refresh_statistics_population_options()
         self.redraw_current_plot(show_status=False)
         self.statusBar().showMessage(f"Renamed gate to {self.active_gate.name}", 4000)
 
@@ -887,9 +963,11 @@ class MainWindow(QMainWindow):
         del self.gates[gate_index]
         self.sample_panel.gate_list.takeItem(gate_index + 1)
         self.active_gate = None
+        self._clear_statistics_results()
         self.sample_panel.select_gate_row(0)
         self.inspector_panel.set_active_gate("All events")
         self.inspector_panel.set_gate_editor_state(None, None)
+        self._refresh_statistics_population_options()
         self.redraw_current_plot(show_status=False)
         self.statusBar().showMessage(f"Deleted {gate.name}", 4000)
 
@@ -897,6 +975,98 @@ class MainWindow(QMainWindow):
         self.plot_panel.clear_all_rois()
         self.inspector_panel.set_active_gate(self.current_population_name())
         self.statusBar().showMessage("Draft gate cleared", 4000)
+
+    def on_calculate_statistics(self) -> None:
+        if self.current_sample is None:
+            self.statusBar().showMessage("Load an FCS file before calculating statistics", 4000)
+            return
+
+        population_selection = self._population_from_statistics_selection()
+        if population_selection is None:
+            self.statusBar().showMessage("Select a valid population for statistics", 4000)
+            return
+
+        statistic_keys = self.inspector_panel.selected_statistics()
+        if not statistic_keys:
+            self.statusBar().showMessage("Select at least one statistic", 4000)
+            return
+
+        channel_index = self.inspector_panel.current_statistics_channel_index()
+        if channel_index < 0 or channel_index >= self.current_sample.channel_count:
+            self.statusBar().showMessage("Select a valid channel for statistics", 4000)
+            return
+
+        population_name, population_mask, parent_mask = population_selection
+        channel_name = self.current_sample.channel_label(channel_index)
+        channel_values = self.current_sample.events[population_mask, channel_index]
+        statistics = calculate_population_statistics(
+            channel_values,
+            population_mask,
+            total_event_count=self.current_sample.event_count,
+            parent_mask=parent_mask,
+            statistics=statistic_keys,
+        )
+
+        rows = [(result.label, self._format_statistic_value(result)) for result in statistics]
+        self.inspector_panel.set_statistics_results(rows)
+        self._latest_statistics = statistics
+        self._latest_statistics_population_name = population_name
+        self._latest_statistics_channel_name = channel_name
+        self.statusBar().showMessage(
+            f"Calculated {len(statistics)} statistics for {population_name} on {channel_name}",
+            5000,
+        )
+
+    def on_export_statistics(self) -> None:
+        if self.current_sample is None:
+            self.statusBar().showMessage("No sample loaded", 4000)
+            return
+
+        if not self._latest_statistics:
+            self.statusBar().showMessage("Calculate statistics before exporting", 4000)
+            return
+
+        default_name = (
+            f"{self.current_sample.file_path.stem}_"
+            f"{self._latest_statistics_population_name.lower().replace(' ', '_')}_statistics.csv"
+        )
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export statistics",
+            default_name,
+            "CSV files (*.csv);;All files (*)",
+        )
+
+        if not file_path:
+            self.statusBar().showMessage("Statistics export cancelled", 3000)
+            return
+
+        try:
+            output_path = export_population_statistics_to_csv(
+                sample_name=self.current_sample.file_name,
+                population_name=self._latest_statistics_population_name,
+                channel_name=self._latest_statistics_channel_name,
+                statistics=self._latest_statistics,
+                output_path=file_path,
+            )
+        except Exception as exc:
+            QMessageBox.critical(
+                self,
+                "Statistics export failed",
+                f"Could not export statistics.\n\nError:\n{exc}",
+            )
+            self.statusBar().showMessage("Failed to export statistics", 5000)
+            return
+
+        self.statusBar().showMessage(f"Exported statistics to {output_path}", 6000)
+
+    @staticmethod
+    def _format_statistic_value(result: StatisticResult) -> str:
+        if result.key == "event_count":
+            return f"{int(round(result.value)):,}"
+        if np.isnan(result.value):
+            return "NaN"
+        return f"{result.value:.4f}"
 
     def on_export_active_gate(self) -> None:
         if self.current_sample is None:

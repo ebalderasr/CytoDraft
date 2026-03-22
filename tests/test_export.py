@@ -4,7 +4,12 @@ import flowio
 import numpy as np
 import pandas as pd
 
-from cytodraft.core.export import export_masked_events_to_csv, export_masked_events_to_fcs
+from cytodraft.core.export import (
+    export_masked_events_to_csv,
+    export_masked_events_to_fcs,
+    export_population_statistics_to_csv,
+)
+from cytodraft.core.statistics import StatisticResult
 from cytodraft.models.sample import ChannelInfo, SampleData
 
 
@@ -81,3 +86,33 @@ def test_export_masked_events_to_fcs(tmp_path: Path) -> None:
     assert exported.channels[1]["pnn"] == "FSC-A"
     assert exported.channels[1]["pns"] == "FSC"
     assert exported.channels[1]["pnr"] == 1024.0
+
+
+def test_export_population_statistics_to_csv(tmp_path: Path) -> None:
+    output_path = tmp_path / "stats.csv"
+
+    export_population_statistics_to_csv(
+        sample_name="demo.fcs",
+        population_name="Gate 1",
+        channel_name="FSC-A",
+        statistics=[
+            StatisticResult(key="mean", label="Mean", value=12.5),
+            StatisticResult(key="median", label="Median", value=11.0),
+        ],
+        output_path=output_path,
+    )
+
+    df = pd.read_csv(output_path)
+    assert list(df.columns) == [
+        "sample",
+        "population",
+        "channel",
+        "statistic_key",
+        "statistic_label",
+        "value",
+    ]
+    assert df["sample"].tolist() == ["demo.fcs", "demo.fcs"]
+    assert df["population"].tolist() == ["Gate 1", "Gate 1"]
+    assert df["channel"].tolist() == ["FSC-A", "FSC-A"]
+    assert df["statistic_key"].tolist() == ["mean", "median"]
+    assert df["value"].tolist() == [12.5, 11.0]

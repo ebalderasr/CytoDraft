@@ -5,6 +5,7 @@ from pathlib import Path
 import pandas as pd
 from flowio import create_fcs
 
+from cytodraft.core.statistics import StatisticResult
 from cytodraft.models.sample import SampleData
 
 
@@ -66,4 +67,27 @@ def export_masked_events_to_fcs(
             metadata_dict=metadata,
         )
 
+    return output
+
+
+def export_population_statistics_to_csv(
+    *,
+    sample_name: str,
+    population_name: str,
+    channel_name: str,
+    statistics: list[StatisticResult],
+    output_path: str | Path,
+) -> Path:
+    output = Path(output_path)
+    df = pd.DataFrame(
+        {
+            "sample": [sample_name] * len(statistics),
+            "population": [population_name] * len(statistics),
+            "channel": [channel_name] * len(statistics),
+            "statistic_key": [result.key for result in statistics],
+            "statistic_label": [result.label for result in statistics],
+            "value": [result.value for result in statistics],
+        }
+    )
+    df.to_csv(output, index=False)
     return output
