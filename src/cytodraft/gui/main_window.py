@@ -9,12 +9,14 @@ from PySide6.QtWidgets import (
     QInputDialog,
     QMainWindow,
     QMessageBox,
+    QScrollArea,
     QSplitter,
 )
 
 from cytodraft.core.export import export_masked_events_to_csv
 from cytodraft.core.fcs_reader import choose_default_axes
 from cytodraft.core.gating import (
+    circle_mask_from_parent,
     polygon_mask_from_parent,
     rectangle_mask_from_parent,
     range_mask_from_parent,
@@ -23,6 +25,7 @@ from cytodraft.core.transforms import apply_scale, axis_label
 from cytodraft.gui.panels import InspectorPanel, SamplePanel
 from cytodraft.gui.plot_widget import CytometryPlotWidget
 from cytodraft.models.gate import (
+    CircleGate,
     DEFAULT_GATE_COLOR,
     PolygonGate,
     RangeGate,
@@ -41,8 +44,8 @@ class MainWindow(QMainWindow):
 
         self.sample_service = SampleService()
         self.current_sample: SampleData | None = None
-        self.gates: list[RectangleGate | RangeGate | PolygonGate] = []
-        self.active_gate: RectangleGate | RangeGate | PolygonGate | None = None
+        self.gates: list[RectangleGate | RangeGate | PolygonGate | CircleGate] = []
+        self.active_gate: RectangleGate | RangeGate | PolygonGate | CircleGate | None = None
 
         self.sample_panel = SamplePanel()
         self.plot_panel = CytometryPlotWidget()
@@ -54,10 +57,14 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Ready")
 
     def _build_ui(self) -> None:
+        sample_scroll = self._make_side_scroll(self.sample_panel)
+        inspector_scroll = self._make_side_scroll(self.inspector_panel)
+
         splitter = QSplitter(Qt.Horizontal)
-        splitter.addWidget(self.sample_panel)
+        splitter.setChildrenCollapsible(False)
+        splitter.addWidget(sample_scroll)
         splitter.addWidget(self.plot_panel)
-        splitter.addWidget(self.inspector_panel)
+        splitter.addWidget(inspector_scroll)
 
         splitter.setStretchFactor(0, 2)
         splitter.setStretchFactor(1, 7)
@@ -66,6 +73,14 @@ class MainWindow(QMainWindow):
 
         self.setCentralWidget(splitter)
         self._create_menu()
+
+    def _make_side_scroll(self, widget) -> QScrollArea:
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setWidget(widget)
+        return scroll
 
     def _create_menu(self) -> None:
         menu_bar = self.menuBar()
@@ -429,6 +444,9 @@ class MainWindow(QMainWindow):
             if scatter_gate_type == "polygon":
                 created = self.plot_panel.create_polygon_roi()
                 draft_name = f"Draft polygon on {self.current_population_name()}"
+            elif scatter_gate_type == "circle":
+                created = self.plot_panel.create_circle_roi()
+                draft_name = f"Draft circle on {self.current_population_name()}"
             else:
                 created = self.plot_panel.create_rectangle_roi()
                 draft_name = f"Draft rectangle on {self.current_population_name()}"
@@ -456,6 +474,11 @@ class MainWindow(QMainWindow):
         polygon_points = self.plot_panel.polygon_roi_points()
         if polygon_points is not None:
             self._apply_polygon_gate()
+            return
+
+        circle_geometry = self.plot_panel.circle_roi_geometry()
+        if circle_geometry is not None:
+            self._apply_circle_gate()
         else:
             self._apply_rectangle_gate()
 
@@ -637,6 +660,81 @@ class MainWindow(QMainWindow):
             6000,
         )
 
+    def _apply_circle_gate(self) -> None:
+        if self.current_sample is None:
+            return
+
+        geometry = self.plot_panel.circle_roi_geometry()
+        if geometry is None:
+            self.statusBar().showMessage("Create a circle gate first", 4000)
+            return
+
+        x_idx, y_idx = self.inspector_panel.current_axes()
+        sample = self.current_sample
+
+        parent_mask = self.current_population_mask()
+        if parent_mask is None:
+            self.statusBar().showMessage("No active population available", 4000)
+            return
+
+        parent_count = int(parent_mask.sum())
+        if parent_count == 0:
+            self.statusBar().showMessage("The active population is empty", 4000)
+            return
+
+        x_scale, y_scale = self.inspector_panel.current_scales()
+        x = apply_scale(sample.events[:, x_idx], x_scale)
+        y = apply_scale(sample.events[:, y_idx], y_scale)
+
+        center_x, center_y, radius = geometry
+        full_mask = circle_mask_from_parent(
+            x,
+            y,
+            parent_mask,
+            center_x=center_x,
+            center_y=center_y,
+            radius=radius,
+        )
+
+        event_count = int(full_mask.sum())
+        total_count = sample.event_count
+        percentage_parent = (event_count / parent_count * 100.0) if parent_count else 0.0
+        percentage_total = (event_count / total_count * 100.0) if total_count else 0.0
+
+        prompted_details = self.prompt_for_gate_details(
+            initial_name=f"Gate {len(self.gates) + 1}",
+            initial_color=DEFAULT_GATE_COLOR,
+            title="Apply circle gate",
+        )
+        if prompted_details is None:
+            self.statusBar().showMessage("Gate creation cancelled", 3000)
+            return
+
+        gate_name, gate_color = prompted_details
+        gate = CircleGate(
+            name=gate_name,
+            parent_name=self.current_population_name(),
+            x_channel_index=x_idx,
+            y_channel_index=y_idx,
+            x_label=sample.channel_label(x_idx),
+            y_label=sample.channel_label(y_idx),
+            center_x=center_x,
+            center_y=center_y,
+            radius=radius,
+            event_count=event_count,
+            percentage_parent=percentage_parent,
+            percentage_total=percentage_total,
+            full_mask=full_mask,
+            color_hex=gate_color,
+        )
+
+        self._store_and_select_new_gate(gate)
+        self.statusBar().showMessage(
+            f"Applied {gate.name} on {gate.parent_name}: "
+            f"{event_count:,} events ({percentage_parent:.2f}% parent, {percentage_total:.2f}% total)",
+            6000,
+        )
+
     def _apply_range_gate(self) -> None:
         if self.current_sample is None:
             return
@@ -706,7 +804,10 @@ class MainWindow(QMainWindow):
             6000,
         )
 
-    def _store_and_select_new_gate(self, gate: RectangleGate | RangeGate | PolygonGate) -> None:
+    def _store_and_select_new_gate(
+        self,
+        gate: RectangleGate | RangeGate | PolygonGate | CircleGate,
+    ) -> None:
         self.gates.append(gate)
         self.sample_panel.add_gate(gate.label, select=False)
         self.sample_panel.update_gate(len(self.gates) - 1, gate.label, gate.color_hex)

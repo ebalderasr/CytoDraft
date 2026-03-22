@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pyqtgraph as pg
 from PySide6.QtGui import QColor
-from PySide6.QtWidgets import QVBoxLayout, QWidget
+from PySide6.QtWidgets import QSizePolicy, QVBoxLayout, QWidget
 
 
 class CytometryPlotWidget(QWidget):
@@ -11,15 +11,25 @@ class CytometryPlotWidget(QWidget):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self.setMinimumWidth(0)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
         self.plot_widget = pg.PlotWidget()
-        self.plot_widget.setBackground("w")
-        self.plot_widget.showGrid(x=True, y=True, alpha=0.2)
+        self.plot_widget.setBackground("#fbfdff")
+        self.plot_widget.showGrid(x=True, y=True, alpha=0.12)
         self.plot_widget.setLabel("bottom", "X")
         self.plot_widget.setLabel("left", "Y")
-        self.plot_widget.setTitle("CytoDraft plot area")
+        self.plot_widget.setTitle("CytoDraft plot area", color="#334155", size="12pt")
+        self.plot_widget.setMenuEnabled(False)
+        self.plot_widget.setAntialiasing(True)
+        self.plot_widget.getPlotItem().getViewBox().setBorder(pg.mkPen("#d9e2ec"))
+        self.plot_widget.getAxis("bottom").setPen(pg.mkPen("#94a3b8"))
+        self.plot_widget.getAxis("left").setPen(pg.mkPen("#94a3b8"))
+        self.plot_widget.getAxis("bottom").setTextPen(pg.mkPen("#475569"))
+        self.plot_widget.getAxis("left").setTextPen(pg.mkPen("#475569"))
 
         layout = QVBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.plot_widget)
         self.setLayout(layout)
 
@@ -28,6 +38,7 @@ class CytometryPlotWidget(QWidget):
         self._hist_item: pg.PlotDataItem | None = None
         self._rect_roi: pg.RectROI | None = None
         self._poly_roi: pg.PolyLineROI | None = None
+        self._circle_roi: pg.CircleROI | None = None
         self._range_region: pg.LinearRegionItem | None = None
 
         self.show_placeholder_data()
@@ -39,6 +50,7 @@ class CytometryPlotWidget(QWidget):
         self._hist_item = None
         self._rect_roi = None
         self._poly_roi = None
+        self._circle_roi = None
         self._range_region = None
 
     def show_placeholder_data(self) -> None:
@@ -54,8 +66,9 @@ class CytometryPlotWidget(QWidget):
         self._hist_item = None
         self._rect_roi = None
         self._poly_roi = None
+        self._circle_roi = None
         self._range_region = None
-        self.plot_widget.setTitle(title)
+        self.plot_widget.setTitle(title, color="#64748b", size="12pt")
         self.plot_widget.setLabel("bottom", "")
         self.plot_widget.setLabel("left", "")
 
@@ -107,6 +120,7 @@ class CytometryPlotWidget(QWidget):
         self.plot_widget.clear()
         self._rect_roi = None
         self._poly_roi = None
+        self._circle_roi = None
         self._range_region = None
         self._base_scatter_item = None
         self._highlight_scatter_item = None
@@ -118,7 +132,7 @@ class CytometryPlotWidget(QWidget):
         plot_title = title or f"{y_label} vs {x_label}"
         if displayed_count < total_count:
             plot_title = f"{plot_title} (showing {displayed_count:,} / {total_count:,})"
-        self.plot_widget.setTitle(plot_title)
+        self.plot_widget.setTitle(plot_title, color="#334155", size="12pt")
 
         self._base_scatter_item = pg.ScatterPlotItem(
             x=x_plot,
@@ -158,6 +172,7 @@ class CytometryPlotWidget(QWidget):
         self.plot_widget.clear()
         self._rect_roi = None
         self._poly_roi = None
+        self._circle_roi = None
         self._range_region = None
         self._base_scatter_item = None
         self._highlight_scatter_item = None
@@ -175,7 +190,7 @@ class CytometryPlotWidget(QWidget):
 
         self.plot_widget.setLabel("bottom", x_label)
         self.plot_widget.setLabel("left", "Count")
-        self.plot_widget.setTitle(title or f"{x_label} histogram")
+        self.plot_widget.setTitle(title or f"{x_label} histogram", color="#334155", size="12pt")
 
         self._hist_item = self.plot_widget.plot(
             edges,
@@ -279,6 +294,37 @@ class CytometryPlotWidget(QWidget):
         self._poly_roi = roi
         return True
 
+    def create_circle_roi(self) -> bool:
+        view_range = self.plot_widget.viewRange()
+        if not view_range or len(view_range) != 2:
+            return False
+
+        (x_min, x_max), (y_min, y_max) = view_range
+        if x_max <= x_min or y_max <= y_min:
+            return False
+
+        size = min(x_max - x_min, y_max - y_min) * 0.28
+        x0 = x_min + (x_max - x_min - size) * 0.5
+        y0 = y_min + (y_max - y_min - size) * 0.5
+
+        self.clear_all_rois()
+
+        roi = pg.CircleROI(
+            [x0, y0],
+            [size, size],
+            pen=pg.mkPen((200, 60, 60), width=2),
+            movable=True,
+            removable=False,
+            rotatable=False,
+            resizable=True,
+        )
+        roi.addScaleHandle((1, 0.5), (0, 0.5))
+        roi.addScaleHandle((0.5, 1), (0.5, 0))
+
+        self.plot_widget.addItem(roi)
+        self._circle_roi = roi
+        return True
+
     def create_range_region(self) -> bool:
         view_range = self.plot_widget.viewRange()
         if not view_range or len(view_range) != 2:
@@ -307,6 +353,7 @@ class CytometryPlotWidget(QWidget):
     def clear_all_rois(self) -> None:
         self.clear_rectangle_roi()
         self.clear_polygon_roi()
+        self.clear_circle_roi()
         self.clear_range_region()
 
     def clear_rectangle_roi(self) -> None:
@@ -318,6 +365,11 @@ class CytometryPlotWidget(QWidget):
         if self._poly_roi is not None:
             self.plot_widget.removeItem(self._poly_roi)
             self._poly_roi = None
+
+    def clear_circle_roi(self) -> None:
+        if self._circle_roi is not None:
+            self.plot_widget.removeItem(self._circle_roi)
+            self._circle_roi = None
 
     def clear_range_region(self) -> None:
         if self._range_region is not None:
@@ -357,3 +409,15 @@ class CytometryPlotWidget(QWidget):
 
         x_min, x_max = self._range_region.getRegion()
         return float(x_min), float(x_max)
+
+    def circle_roi_geometry(self) -> tuple[float, float, float] | None:
+        if self._circle_roi is None:
+            return None
+
+        pos = self._circle_roi.pos()
+        size = self._circle_roi.size()
+        diameter = min(float(size.x()), float(size.y()))
+        radius = diameter / 2.0
+        center_x = float(pos.x()) + radius
+        center_y = float(pos.y()) + radius
+        return center_x, center_y, radius

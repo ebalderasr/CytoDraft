@@ -3,16 +3,19 @@ from __future__ import annotations
 from PySide6.QtCore import QSignalBlocker, Qt, Signal
 from PySide6.QtGui import QColor, QDoubleValidator
 from PySide6.QtWidgets import (
+    QButtonGroup,
     QCheckBox,
     QComboBox,
     QFormLayout,
     QGroupBox,
+    QHBoxLayout,
     QLabel,
     QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMenu,
     QPushButton,
+    QSizePolicy,
     QSpinBox,
     QVBoxLayout,
     QWidget,
@@ -30,16 +33,22 @@ class SamplePanel(QWidget):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self.setMinimumWidth(0)
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
 
         self.sample_list = QListWidget()
         self.sample_list.setAlternatingRowColors(True)
+        self.sample_list.setSpacing(2)
 
         self.gate_list = QListWidget()
         self.gate_list.setAlternatingRowColors(True)
         self.gate_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.gate_list.setSpacing(2)
 
-        self.add_sample_button = QPushButton("Load sample")
-        self.remove_sample_button = QPushButton("Remove selected")
+        self.add_sample_button = QPushButton("Open FCS")
+        self.add_sample_button.setProperty("variant", "primary")
+        self.remove_sample_button = QPushButton("Remove sample")
+        self.remove_sample_button.setProperty("variant", "danger")
         self.remove_sample_button.setEnabled(False)
 
         sample_box = QGroupBox("Samples")
@@ -55,6 +64,8 @@ class SamplePanel(QWidget):
         gate_box.setLayout(gate_layout)
 
         layout = QVBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(14)
         layout.addWidget(sample_box, stretch=3)
         layout.addWidget(gate_box, stretch=2)
         self.setLayout(layout)
@@ -149,6 +160,8 @@ class InspectorPanel(QWidget):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self.setMinimumWidth(0)
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
 
         self.file_label = QLabel("—")
         self.events_label = QLabel("—")
@@ -178,9 +191,25 @@ class InspectorPanel(QWidget):
         self.plot_mode_combo.addItem("Scatter (2D)", "scatter")
         self.plot_mode_combo.addItem("Histogram (1D)", "histogram")
 
-        self.scatter_gate_type_combo = QComboBox()
-        self.scatter_gate_type_combo.addItem("Rectangle", "rectangle")
-        self.scatter_gate_type_combo.addItem("Polygon", "polygon")
+        self.rectangle_gate_button = QPushButton("Rectangle")
+        self.rectangle_gate_button.setCheckable(True)
+        self.polygon_gate_button = QPushButton("Polygon")
+        self.polygon_gate_button.setCheckable(True)
+        self.circle_gate_button = QPushButton("Circle")
+        self.circle_gate_button.setCheckable(True)
+
+        self.scatter_gate_group = QButtonGroup(self)
+        self.scatter_gate_group.setExclusive(True)
+        self.scatter_gate_group.addButton(self.rectangle_gate_button)
+        self.scatter_gate_group.addButton(self.polygon_gate_button)
+        self.scatter_gate_group.addButton(self.circle_gate_button)
+        self.rectangle_gate_button.setChecked(True)
+
+        gate_button_row = QHBoxLayout()
+        gate_button_row.setSpacing(8)
+        gate_button_row.addWidget(self.rectangle_gate_button)
+        gate_button_row.addWidget(self.polygon_gate_button)
+        gate_button_row.addWidget(self.circle_gate_button)
 
         self.x_axis_combo = QComboBox()
         self.y_axis_combo = QComboBox()
@@ -217,12 +246,14 @@ class InspectorPanel(QWidget):
             edit.setPlaceholderText("auto")
 
         self.apply_view_button = QPushButton("Apply view")
-        self.auto_range_button = QPushButton("Auto range")
+        self.apply_view_button.setProperty("variant", "subtle")
+        self.auto_range_button = QPushButton("Reset zoom")
+        self.auto_range_button.setProperty("variant", "subtle")
 
         plot_controls_box = QGroupBox("Plot controls")
         plot_form = QFormLayout()
         plot_form.addRow("Plot mode:", self.plot_mode_combo)
-        plot_form.addRow("Scatter gate:", self.scatter_gate_type_combo)
+        plot_form.addRow("Scatter gate:", gate_button_row)
         plot_form.addRow("X axis:", self.x_axis_combo)
         plot_form.addRow("Y axis:", self.y_axis_combo)
         plot_form.addRow("X scale:", self.x_scale_combo)
@@ -237,13 +268,18 @@ class InspectorPanel(QWidget):
         plot_form.addRow("Max points:", self.max_points_spin)
         plot_controls_box.setLayout(plot_form)
 
-        self.create_gate_button = QPushButton("Create gate ROI")
+        self.create_gate_button = QPushButton("Create gate")
+        self.create_gate_button.setProperty("variant", "subtle")
         self.apply_gate_button = QPushButton("Apply gate")
-        self.clear_gate_button = QPushButton("Clear draft gate")
-        self.export_gate_button = QPushButton("Export active gate to CSV")
+        self.apply_gate_button.setProperty("variant", "primary")
+        self.clear_gate_button = QPushButton("Clear draft")
+        self.clear_gate_button.setProperty("variant", "danger")
+        self.export_gate_button = QPushButton("Export gate CSV")
+        self.export_gate_button.setProperty("variant", "subtle")
         self.gate_name_edit = QLineEdit()
         self.gate_name_edit.setPlaceholderText("Select a gate")
         self.gate_color_button = QPushButton("Gate color")
+        self.gate_color_button.setProperty("variant", "subtle")
 
         gate_controls_box = QGroupBox("Gate controls")
         gate_layout = QVBoxLayout()
@@ -267,6 +303,8 @@ class InspectorPanel(QWidget):
         hint_box.setLayout(hint_layout)
 
         layout = QVBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(14)
         layout.addWidget(info_box)
         layout.addWidget(plot_controls_box)
         layout.addWidget(gate_controls_box)
@@ -369,15 +407,23 @@ class InspectorPanel(QWidget):
         return str(self.plot_mode_combo.currentData())
 
     def current_scatter_gate_type(self) -> str:
-        return str(self.scatter_gate_type_combo.currentData())
+        if self.polygon_gate_button.isChecked():
+            return "polygon"
+        if self.circle_gate_button.isChecked():
+            return "circle"
+        return "rectangle"
 
     def set_plot_mode(self, mode: str) -> None:
         if mode == "histogram":
-            self.scatter_gate_type_combo.setEnabled(False)
+            self.rectangle_gate_button.setEnabled(False)
+            self.polygon_gate_button.setEnabled(False)
+            self.circle_gate_button.setEnabled(False)
             self.y_axis_combo.setEnabled(False)
             self.y_scale_combo.setEnabled(False)
         else:
-            self.scatter_gate_type_combo.setEnabled(True)
+            self.rectangle_gate_button.setEnabled(True)
+            self.polygon_gate_button.setEnabled(True)
+            self.circle_gate_button.setEnabled(True)
             self.y_axis_combo.setEnabled(self.y_axis_combo.count() >= 2)
             self.y_scale_combo.setEnabled(True)
 

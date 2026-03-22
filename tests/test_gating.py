@@ -1,6 +1,8 @@
 import numpy as np
 
 from cytodraft.core.gating import (
+    circle_mask,
+    circle_mask_from_parent,
     polygon_mask,
     polygon_mask_from_parent,
     range_mask,
@@ -97,3 +99,29 @@ def test_polygon_mask_from_parent_only_selects_within_parent() -> None:
 
     child_mask = polygon_mask_from_parent(x, y, parent_mask, vertices)
     assert child_mask.tolist() == [False, True, True, False, True]
+
+
+def test_circle_mask_selects_points_inside_radius() -> None:
+    x = np.array([0.0, 1.0, 2.0, 3.0, 4.0])
+    y = np.array([0.0, 1.0, 2.0, 3.0, 4.0])
+
+    mask = circle_mask(x, y, center_x=2.0, center_y=2.0, radius=np.sqrt(2.0))
+
+    assert mask.tolist() == [False, True, True, True, False]
+
+
+def test_circle_mask_from_parent_only_selects_within_parent() -> None:
+    x = np.array([0.0, 1.0, 2.0, 3.0, 4.0])
+    y = np.array([0.0, 1.0, 2.0, 3.0, 4.0])
+    parent_mask = np.array([False, True, True, False, True])
+
+    child_mask = circle_mask_from_parent(
+        x,
+        y,
+        parent_mask,
+        center_x=2.0,
+        center_y=2.0,
+        radius=2.0,
+    )
+
+    assert child_mask.tolist() == [False, True, True, False, False]

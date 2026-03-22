@@ -2,7 +2,7 @@ from pathlib import Path
 
 import numpy as np
 from PySide6.QtGui import QColor
-from PySide6.QtWidgets import QApplication, QMessageBox
+from PySide6.QtWidgets import QApplication, QMessageBox, QScrollArea, QSplitter
 
 from cytodraft.gui.main_window import MainWindow
 from cytodraft.models.gate import RangeGate
@@ -236,3 +236,16 @@ def test_current_population_color_uses_active_gate_color() -> None:
     window.active_gate = gate
 
     assert window.current_population_color() == "#aa33cc"
+
+
+def test_main_window_uses_scrollable_side_panels() -> None:
+    get_app()
+    window = MainWindow()
+
+    splitter = window.centralWidget()
+
+    assert isinstance(splitter, QSplitter)
+    assert isinstance(splitter.widget(0), QScrollArea)
+    assert isinstance(splitter.widget(2), QScrollArea)
+    assert window.sample_panel.minimumWidth() == 0
+    assert window.inspector_panel.minimumWidth() == 0
