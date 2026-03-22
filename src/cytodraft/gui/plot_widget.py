@@ -41,6 +41,21 @@ class CytometryPlotWidget(QWidget):
         self.plot_widget.setLabel("bottom", "")
         self.plot_widget.setLabel("left", "")
 
+    def _downsample(
+        self,
+        x: np.ndarray,
+        y: np.ndarray,
+        max_points: int | None,
+    ) -> tuple[np.ndarray, np.ndarray, int, int]:
+        total = len(x)
+
+        if max_points is None or total <= max_points:
+            return x, y, total, total
+
+        rng = np.random.default_rng(42)
+        indices = rng.choice(total, size=max_points, replace=False)
+        return x[indices], y[indices], max_points, total
+
     def plot_scatter(
         self,
         x: np.ndarray,
@@ -49,18 +64,27 @@ class CytometryPlotWidget(QWidget):
         y_label: str,
         *,
         title: str | None = None,
-    ) -> None:
+        max_points: int | None = None,
+    ) -> tuple[int, int]:
+        x_plot, y_plot, displayed_count, total_count = self._downsample(x, y, max_points)
+
         self.plot_widget.clear()
         self.plot_widget.setLabel("bottom", x_label)
         self.plot_widget.setLabel("left", y_label)
-        self.plot_widget.setTitle(title or f"{y_label} vs {x_label}")
+
+        plot_title = title or f"{y_label} vs {x_label}"
+        if displayed_count < total_count:
+            plot_title = f"{plot_title} (showing {displayed_count:,} / {total_count:,})"
+        self.plot_widget.setTitle(plot_title)
 
         self._scatter_item = pg.ScatterPlotItem(
-            x=x,
-            y=y,
+            x=x_plot,
+            y=y_plot,
             size=4,
             pen=None,
             brush=(50, 100, 180, 120),
         )
         self.plot_widget.addItem(self._scatter_item)
         self.plot_widget.enableAutoRange()
+
+        return displayed_count, total_count

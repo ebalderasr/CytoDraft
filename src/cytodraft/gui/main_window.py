@@ -69,6 +69,7 @@ class MainWindow(QMainWindow):
         self.about_action.triggered.connect(self.show_about_dialog)
         self.sample_panel.add_sample_button.clicked.connect(self.open_fcs_dialog)
         self.inspector_panel.axes_changed.connect(self.on_axes_changed)
+        self.inspector_panel.sampling_changed.connect(self.on_sampling_changed)
 
     def open_fcs_dialog(self) -> None:
         file_path, _ = QFileDialog.getOpenFileName(
@@ -114,6 +115,7 @@ class MainWindow(QMainWindow):
             channels=str(sample.channel_count),
             active_gate="None",
         )
+        self.inspector_panel.set_displayed_points(None, None)
 
     def _configure_axis_selectors(self, sample: SampleData) -> None:
         channel_names = [channel.display_name for channel in sample.channels]
@@ -152,20 +154,32 @@ class MainWindow(QMainWindow):
         x_label = sample.channel_label(x_idx)
         y_label = sample.channel_label(y_idx)
 
-        self.plot_panel.plot_scatter(
+        limit_enabled, max_points = self.inspector_panel.sampling_settings()
+        display_limit = max_points if limit_enabled else None
+
+        displayed_count, total_count = self.plot_panel.plot_scatter(
             x,
             y,
             x_label,
             y_label,
             title=f"{sample.file_name} | {y_label} vs {x_label}",
+            max_points=display_limit,
         )
 
+        self.inspector_panel.set_displayed_points(displayed_count, total_count)
+
+        suffix = f"{displayed_count:,}/{total_count:,} displayed"
         self.statusBar().showMessage(
-            f"Viewing {sample.file_name} | X: {x_label} | Y: {y_label}",
+            f"Viewing {sample.file_name} | X: {x_label} | Y: {y_label} | {suffix}",
             4000,
         )
 
     def on_axes_changed(self, x_idx: int, y_idx: int) -> None:
+        self.plot_axes(x_idx, y_idx)
+
+    def on_sampling_changed(self, enabled: bool, max_points: int) -> None:
+        del enabled, max_points
+        x_idx, y_idx = self.inspector_panel.current_axes()
         self.plot_axes(x_idx, y_idx)
 
     def show_about_dialog(self) -> None:

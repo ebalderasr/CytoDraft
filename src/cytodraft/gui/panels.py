@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from PySide6.QtCore import QSignalBlocker, Qt, Signal
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QFormLayout,
     QGroupBox,
     QLabel,
     QListWidget,
     QPushButton,
+    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
@@ -60,6 +62,7 @@ class InspectorPanel(QWidget):
     """Right panel: metadata and plot controls."""
 
     axes_changed = Signal(int, int)
+    sampling_changed = Signal(bool, int)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -68,12 +71,14 @@ class InspectorPanel(QWidget):
         self.events_label = QLabel("—")
         self.channels_label = QLabel("—")
         self.active_gate_label = QLabel("—")
+        self.displayed_points_label = QLabel("—")
 
         for label in (
             self.file_label,
             self.events_label,
             self.channels_label,
             self.active_gate_label,
+            self.displayed_points_label,
         ):
             label.setTextInteractionFlags(Qt.TextSelectableByMouse)
 
@@ -83,6 +88,7 @@ class InspectorPanel(QWidget):
         info_form.addRow("Events:", self.events_label)
         info_form.addRow("Channels:", self.channels_label)
         info_form.addRow("Active gate:", self.active_gate_label)
+        info_form.addRow("Displayed:", self.displayed_points_label)
         info_box.setLayout(info_form)
 
         self.x_axis_combo = QComboBox()
@@ -90,15 +96,27 @@ class InspectorPanel(QWidget):
         self.x_axis_combo.setEnabled(False)
         self.y_axis_combo.setEnabled(False)
 
+        self.limit_points_checkbox = QCheckBox("Limit displayed points")
+        self.limit_points_checkbox.setChecked(True)
+
+        self.max_points_spin = QSpinBox()
+        self.max_points_spin.setRange(1000, 200000)
+        self.max_points_spin.setSingleStep(1000)
+        self.max_points_spin.setValue(30000)
+
         plot_controls_box = QGroupBox("Plot controls")
         plot_form = QFormLayout()
         plot_form.addRow("X axis:", self.x_axis_combo)
         plot_form.addRow("Y axis:", self.y_axis_combo)
+        plot_form.addRow("", self.limit_points_checkbox)
+        plot_form.addRow("Max points:", self.max_points_spin)
         plot_controls_box.setLayout(plot_form)
 
         hint_box = QGroupBox("Notes")
         hint_layout = QVBoxLayout()
-        hint_layout.addWidget(QLabel("Use the axis selectors to inspect different channel pairs."))
+        hint_layout.addWidget(
+            QLabel("Use the axis selectors to inspect channels. Downsampling only affects display, not the stored data.")
+        )
         hint_box.setLayout(hint_layout)
 
         layout = QVBoxLayout()
@@ -110,6 +128,8 @@ class InspectorPanel(QWidget):
 
         self.x_axis_combo.currentIndexChanged.connect(self._emit_axes_changed)
         self.y_axis_combo.currentIndexChanged.connect(self._emit_axes_changed)
+        self.limit_points_checkbox.toggled.connect(self._emit_sampling_changed)
+        self.max_points_spin.valueChanged.connect(self._emit_sampling_changed)
 
     def set_file_info(
         self,
@@ -160,6 +180,18 @@ class InspectorPanel(QWidget):
             self.x_axis_combo.setEnabled(False)
             self.y_axis_combo.setEnabled(False)
 
+    def current_axes(self) -> tuple[int, int]:
+        return self.x_axis_combo.currentIndex(), self.y_axis_combo.currentIndex()
+
+    def sampling_settings(self) -> tuple[bool, int]:
+        return self.limit_points_checkbox.isChecked(), self.max_points_spin.value()
+
+    def set_displayed_points(self, displayed: int | None, total: int | None) -> None:
+        if displayed is None or total is None:
+            self.displayed_points_label.setText("—")
+            return
+        self.displayed_points_label.setText(f"{displayed:,} / {total:,}")
+
     def _emit_axes_changed(self) -> None:
         x_index = self.x_axis_combo.currentIndex()
         y_index = self.y_axis_combo.currentIndex()
@@ -168,3 +200,9 @@ class InspectorPanel(QWidget):
             return
 
         self.axes_changed.emit(x_index, y_index)
+
+    def _emit_sampling_changed(self) -> None:
+        self.sampling_changed.emit(
+            self.limit_points_checkbox.isChecked(),
+            self.max_points_spin.value(),
+        )
