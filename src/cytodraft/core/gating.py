@@ -153,15 +153,18 @@ def circle_mask(
     *,
     center_x: float,
     center_y: float,
-    radius: float,
+    radius: float | None = None,
+    radius_x: float | None = None,
+    radius_y: float | None = None,
 ) -> np.ndarray:
-    normalized_radius = abs(radius)
-    if normalized_radius == 0:
+    resolved_radius_x = abs(radius_x) if radius_x is not None else abs(radius or 0.0)
+    resolved_radius_y = abs(radius_y) if radius_y is not None else abs(radius or 0.0)
+    if resolved_radius_x == 0 or resolved_radius_y == 0:
         return np.zeros(len(x), dtype=bool)
 
-    dx = x - center_x
-    dy = y - center_y
-    return (dx * dx + dy * dy) <= (normalized_radius * normalized_radius)
+    dx = (x - center_x) / resolved_radius_x
+    dy = (y - center_y) / resolved_radius_y
+    return (dx * dx + dy * dy) <= 1.0
 
 
 def circle_mask_from_parent(
@@ -171,7 +174,9 @@ def circle_mask_from_parent(
     *,
     center_x: float,
     center_y: float,
-    radius: float,
+    radius: float | None = None,
+    radius_x: float | None = None,
+    radius_y: float | None = None,
 ) -> np.ndarray:
     if len(x) != len(parent_mask) or len(y) != len(parent_mask):
         raise ValueError("x, y, and parent_mask must have the same length.")
@@ -191,6 +196,8 @@ def circle_mask_from_parent(
         center_x=center_x,
         center_y=center_y,
         radius=radius,
+        radius_x=radius_x,
+        radius_y=radius_y,
     )
 
     full_mask[parent_indices[child_mask_within_parent]] = True

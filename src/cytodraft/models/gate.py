@@ -23,6 +23,8 @@ class RectangleGate:
     percentage_parent: float
     percentage_total: float
     full_mask: np.ndarray
+    x_scale: str = "linear"
+    y_scale: str = "linear"
     color_hex: str = DEFAULT_GATE_COLOR
 
     @property
@@ -45,6 +47,7 @@ class RangeGate:
     percentage_parent: float
     percentage_total: float
     full_mask: np.ndarray
+    x_scale: str = "linear"
     color_hex: str = DEFAULT_GATE_COLOR
 
     @property
@@ -68,6 +71,8 @@ class PolygonGate:
     percentage_parent: float
     percentage_total: float
     full_mask: np.ndarray
+    x_scale: str = "linear"
+    y_scale: str = "linear"
     color_hex: str = DEFAULT_GATE_COLOR
 
     @property
@@ -93,6 +98,10 @@ class CircleGate:
     percentage_parent: float
     percentage_total: float
     full_mask: np.ndarray
+    radius_x: float | None = None
+    radius_y: float | None = None
+    x_scale: str = "linear"
+    y_scale: str = "linear"
     color_hex: str = DEFAULT_GATE_COLOR
 
     @property

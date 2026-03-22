@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import numpy as np
 import pyqtgraph as pg
 from PySide6.QtGui import QColor
@@ -9,7 +11,40 @@ ROI_BORDER_COLOR = "#0f766e"
 ROI_HOVER_COLOR = "#f59e0b"
 ROI_HANDLE_COLOR = "#374151"
 ROI_HANDLE_HOVER_COLOR = "#111827"
-ROI_HANDLE_SIZE = 11
+ROI_HANDLE_SIZE = 13
+POLYGON_HANDLE_SIZE = 23
+CIRCLE_HANDLE_SIZE = 23
+ROI_HANDLE_PEN_WIDTH = 3
+
+
+@dataclass(slots=True)
+class ScatterGateOverlay:
+    kind: str
+    color_hex: str
+    x_min: float | None = None
+    x_max: float | None = None
+    y_min: float | None = None
+    y_max: float | None = None
+    vertices: list[tuple[float, float]] | None = None
+    center_x: float | None = None
+    center_y: float | None = None
+    radius_x: float | None = None
+    radius_y: float | None = None
+
+
+@dataclass(slots=True)
+class HistogramOverlay:
+    values: np.ndarray
+    color_hex: str
+    label: str
+
+
+@dataclass(slots=True)
+class HistogramGateOverlay:
+    kind: str
+    color_hex: str
+    x_min: float
+    x_max: float
 
 
 class CytometryPlotWidget(QWidget):
@@ -42,10 +77,11 @@ class CytometryPlotWidget(QWidget):
         self._base_scatter_item: pg.ScatterPlotItem | None = None
         self._highlight_scatter_item: pg.ScatterPlotItem | None = None
         self._subpopulation_scatter_items: list[pg.ScatterPlotItem] = []
+        self._overlay_curve_items: list[pg.PlotCurveItem] = []
         self._hist_item: pg.PlotDataItem | None = None
         self._rect_roi: pg.RectROI | None = None
         self._poly_roi: pg.PolyLineROI | None = None
-        self._circle_roi: pg.CircleROI | None = None
+        self._circle_roi: pg.EllipseROI | None = None
         self._range_region: pg.LinearRegionItem | None = None
 
         self.show_placeholder_data()
@@ -55,6 +91,7 @@ class CytometryPlotWidget(QWidget):
         self._base_scatter_item = None
         self._highlight_scatter_item = None
         self._subpopulation_scatter_items = []
+        self._overlay_curve_items = []
         self._hist_item = None
         self._rect_roi = None
         self._poly_roi = None
@@ -72,6 +109,7 @@ class CytometryPlotWidget(QWidget):
         self._base_scatter_item = None
         self._highlight_scatter_item = None
         self._subpopulation_scatter_items = []
+        self._overlay_curve_items = []
         self._hist_item = None
         self._rect_roi = None
         self._poly_roi = None
@@ -109,6 +147,7 @@ class CytometryPlotWidget(QWidget):
         selected_mask: np.ndarray | None = None,
         point_color: str = "#466ebe",
         subpopulation_overlays: list[tuple[np.ndarray, np.ndarray, str]] | None = None,
+        gate_overlays: list[ScatterGateOverlay] | None = None,
     ) -> tuple[int, int]:
         x_plot, y_plot, display_indices, total_count = self._downsample(x, y, max_points)
         displayed_count = len(display_indices)
@@ -135,6 +174,7 @@ class CytometryPlotWidget(QWidget):
         self._base_scatter_item = None
         self._highlight_scatter_item = None
         self._subpopulation_scatter_items = []
+        self._overlay_curve_items = []
         self._hist_item = None
 
         self.plot_widget.setLabel("bottom", x_label)
@@ -187,6 +227,13 @@ class CytometryPlotWidget(QWidget):
                 )
                 self.plot_widget.addItem(self._highlight_scatter_item)
 
+        if gate_overlays:
+            for overlay in gate_overlays:
+                curve_item = self._make_scatter_gate_overlay(overlay)
+                if curve_item is not None:
+                    self.plot_widget.addItem(curve_item)
+                    self._overlay_curve_items.append(curve_item)
+
         self.plot_widget.enableAutoRange()
         return displayed_count, total_count
 
@@ -197,6 +244,8 @@ class CytometryPlotWidget(QWidget):
         *,
         title: str | None = None,
         bins: int = 128,
+        subpopulation_overlays: list[HistogramOverlay] | None = None,
+        gate_overlays: list[HistogramGateOverlay] | None = None,
     ) -> tuple[int, int]:
         self.plot_widget.clear()
         self._rect_roi = None
@@ -206,6 +255,7 @@ class CytometryPlotWidget(QWidget):
         self._base_scatter_item = None
         self._highlight_scatter_item = None
         self._subpopulation_scatter_items = []
+        self._overlay_curve_items = []
         self._hist_item = None
 
         total_count = len(values)
@@ -231,6 +281,42 @@ class CytometryPlotWidget(QWidget):
             pen=pg.mkPen((70, 110, 190), width=1),
         )
 
+        if subpopulation_overlays:
+            for overlay in subpopulation_overlays:
+                finite_values = overlay.values[np.isfinite(overlay.values)]
+                if len(finite_values) == 0:
+                    continue
+                overlay_counts, _ = np.histogram(finite_values, bins=edges)
+                color = QColor(overlay.color_hex)
+                curve_item = self.plot_widget.plot(
+                    edges,
+                    overlay_counts,
+                    stepMode="center",
+                    fillLevel=0,
+                    brush=(color.red(), color.green(), color.blue(), 50),
+                    pen=pg.mkPen(color, width=2),
+                    name=overlay.label,
+                )
+                self._overlay_curve_items.append(curve_item)
+
+        if gate_overlays:
+            y_max = max(float(np.max(counts)), 1.0)
+            for overlay in gate_overlays:
+                color = QColor(overlay.color_hex)
+                left_line = pg.InfiniteLine(
+                    pos=overlay.x_min,
+                    angle=90,
+                    pen=pg.mkPen(color, width=2, style=pg.QtCore.Qt.PenStyle.DashLine),
+                )
+                right_line = pg.InfiniteLine(
+                    pos=overlay.x_max,
+                    angle=90,
+                    pen=pg.mkPen(color, width=2, style=pg.QtCore.Qt.PenStyle.DashLine),
+                )
+                self.plot_widget.addItem(left_line)
+                self.plot_widget.addItem(right_line)
+                self._overlay_curve_items.extend([left_line, right_line])
+
         self.plot_widget.enableAutoRange()
         return displayed_count, total_count
 
@@ -254,8 +340,43 @@ class CytometryPlotWidget(QWidget):
     def _roi_outline_pen(self, color: str = ROI_BORDER_COLOR, *, width: int = 3) -> pg.mkPen:
         return pg.mkPen(color, width=width)
 
-    def _configure_roi_handles(self, roi: pg.ROI) -> None:
-        roi.handleSize = ROI_HANDLE_SIZE
+    def _configure_roi_handles(self, roi: pg.ROI, *, handle_size: int = ROI_HANDLE_SIZE) -> None:
+        roi.handleSize = handle_size
+
+    def _make_scatter_gate_overlay(self, overlay: ScatterGateOverlay) -> pg.PlotCurveItem | None:
+        color = QColor(overlay.color_hex)
+        pen = pg.mkPen(color, width=2)
+
+        if overlay.kind == "rectangle":
+            if None in (overlay.x_min, overlay.x_max, overlay.y_min, overlay.y_max):
+                return None
+            x = np.array(
+                [overlay.x_min, overlay.x_max, overlay.x_max, overlay.x_min, overlay.x_min],
+                dtype=float,
+            )
+            y = np.array(
+                [overlay.y_min, overlay.y_min, overlay.y_max, overlay.y_max, overlay.y_min],
+                dtype=float,
+            )
+            return pg.PlotCurveItem(x=x, y=y, pen=pen)
+
+        if overlay.kind == "polygon":
+            if not overlay.vertices:
+                return None
+            points = overlay.vertices + [overlay.vertices[0]]
+            x = np.asarray([point[0] for point in points], dtype=float)
+            y = np.asarray([point[1] for point in points], dtype=float)
+            return pg.PlotCurveItem(x=x, y=y, pen=pen)
+
+        if overlay.kind == "ellipse":
+            if None in (overlay.center_x, overlay.center_y, overlay.radius_x, overlay.radius_y):
+                return None
+            theta = np.linspace(0.0, 2.0 * np.pi, 128)
+            x = overlay.center_x + overlay.radius_x * np.cos(theta)
+            y = overlay.center_y + overlay.radius_y * np.sin(theta)
+            return pg.PlotCurveItem(x=x, y=y, pen=pen)
+
+        return None
 
     def create_rectangle_roi(self) -> bool:
         view_range = self.plot_widget.viewRange()
@@ -280,8 +401,8 @@ class CytometryPlotWidget(QWidget):
             [width, height],
             pen=self._roi_outline_pen(),
             hoverPen=self._roi_outline_pen(ROI_HOVER_COLOR, width=3),
-            handlePen=self._roi_outline_pen(ROI_HANDLE_COLOR, width=2),
-            handleHoverPen=self._roi_outline_pen(ROI_HANDLE_HOVER_COLOR, width=2),
+            handlePen=self._roi_outline_pen(ROI_HANDLE_COLOR, width=ROI_HANDLE_PEN_WIDTH),
+            handleHoverPen=self._roi_outline_pen(ROI_HANDLE_HOVER_COLOR, width=ROI_HANDLE_PEN_WIDTH),
             movable=True,
             removable=False,
             rotatable=False,
@@ -326,14 +447,14 @@ class CytometryPlotWidget(QWidget):
             closed=True,
             pen=self._roi_outline_pen(),
             hoverPen=self._roi_outline_pen(ROI_HOVER_COLOR, width=3),
-            handlePen=self._roi_outline_pen(ROI_HANDLE_COLOR, width=2),
-            handleHoverPen=self._roi_outline_pen(ROI_HANDLE_HOVER_COLOR, width=2),
+            handlePen=self._roi_outline_pen(ROI_HANDLE_COLOR, width=ROI_HANDLE_PEN_WIDTH),
+            handleHoverPen=self._roi_outline_pen(ROI_HANDLE_HOVER_COLOR, width=ROI_HANDLE_PEN_WIDTH),
             movable=True,
             removable=False,
             rotatable=False,
             resizable=False,
         )
-        self._configure_roi_handles(roi)
+        self._configure_roi_handles(roi, handle_size=POLYGON_HANDLE_SIZE)
         self.plot_widget.addItem(roi)
         self._poly_roi = roi
         return True
@@ -347,27 +468,26 @@ class CytometryPlotWidget(QWidget):
         if x_max <= x_min or y_max <= y_min:
             return False
 
-        size = min(x_max - x_min, y_max - y_min) * 0.34
-        x0 = x_min + (x_max - x_min - size) * 0.5
-        y0 = y_min + (y_max - y_min - size) * 0.5
+        width = (x_max - x_min) * 0.24
+        height = (y_max - y_min) * 0.24
+        x0 = x_min + (x_max - x_min - width) * 0.5
+        y0 = y_min + (y_max - y_min - height) * 0.5
 
         self.clear_all_rois()
 
-        roi = pg.CircleROI(
+        roi = pg.EllipseROI(
             [x0, y0],
-            [size, size],
+            [width, height],
             pen=self._roi_outline_pen(),
             hoverPen=self._roi_outline_pen(ROI_HOVER_COLOR, width=3),
-            handlePen=self._roi_outline_pen(ROI_HANDLE_COLOR, width=2),
-            handleHoverPen=self._roi_outline_pen(ROI_HANDLE_HOVER_COLOR, width=2),
+            handlePen=self._roi_outline_pen(ROI_HANDLE_COLOR, width=ROI_HANDLE_PEN_WIDTH),
+            handleHoverPen=self._roi_outline_pen(ROI_HANDLE_HOVER_COLOR, width=ROI_HANDLE_PEN_WIDTH),
             movable=True,
             removable=False,
             rotatable=False,
             resizable=True,
         )
-        self._configure_roi_handles(roi)
-        roi.addScaleHandle((1, 0.5), (0, 0.5))
-        roi.addScaleHandle((0.5, 1), (0.5, 0))
+        self._configure_roi_handles(roi, handle_size=CIRCLE_HANDLE_SIZE)
 
         self.plot_widget.addItem(roi)
         self._circle_roi = roi
@@ -459,14 +579,14 @@ class CytometryPlotWidget(QWidget):
         x_min, x_max = self._range_region.getRegion()
         return float(x_min), float(x_max)
 
-    def circle_roi_geometry(self) -> tuple[float, float, float] | None:
+    def circle_roi_geometry(self) -> tuple[float, float, float, float] | None:
         if self._circle_roi is None:
             return None
 
         pos = self._circle_roi.pos()
         size = self._circle_roi.size()
-        diameter = min(float(size.x()), float(size.y()))
-        radius = diameter / 2.0
-        center_x = float(pos.x()) + radius
-        center_y = float(pos.y()) + radius
-        return center_x, center_y, radius
+        width = float(size.x())
+        height = float(size.y())
+        center_x = float(pos.x()) + width / 2.0
+        center_y = float(pos.y()) + height / 2.0
+        return center_x, center_y, width / 2.0, height / 2.0

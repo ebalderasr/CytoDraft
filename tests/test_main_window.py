@@ -37,7 +37,7 @@ def make_sample(name: str, event_count: int = 4) -> SampleData:
     )
 
 
-def test_load_sample_replaces_previous_entry_in_sample_list() -> None:
+def test_load_sample_appends_multiple_entries_to_sample_list() -> None:
     get_app()
     window = MainWindow()
 
@@ -56,8 +56,11 @@ def test_load_sample_replaces_previous_entry_in_sample_list() -> None:
 
     assert window.current_sample is not None
     assert window.current_sample.file_name == "second.fcs"
-    assert window.sample_panel.sample_list.count() == 1
-    assert window.sample_panel.sample_list.item(0).text() == "second.fcs"
+    assert window.sample_panel.group_list.count() == 2
+    assert window.sample_panel.group_list.item(1).text() == "Ungrouped"
+    assert window.sample_panel.sample_list.count() == 2
+    assert window.sample_panel.sample_list.item(0).text() == "first.fcs"
+    assert window.sample_panel.sample_list.item(1).text() == "second.fcs"
 
 
 def test_remove_selected_sample_clears_loaded_state() -> None:
@@ -81,7 +84,9 @@ def test_remove_selected_sample_clears_loaded_state() -> None:
         )
     ]
     window.active_gate = window.gates[0]
-    window.sample_panel.add_sample(sample.file_name)
+    window.workspace.add_sample(sample)
+    window._refresh_group_list()
+    window.sample_panel.add_sample("demo.fcs", 0)
     window.sample_panel.add_gate(window.gates[0].label)
 
     window.remove_selected_sample()
@@ -93,6 +98,127 @@ def test_remove_selected_sample_clears_loaded_state() -> None:
     assert window.sample_panel.gate_list.count() == 1
     assert window.sample_panel.gate_list.item(0).text() == "All events"
     assert window.inspector_panel.file_label.text() == "—"
+
+
+def test_assign_sample_group_updates_workspace_and_list() -> None:
+    get_app()
+    window = MainWindow()
+    sample = make_sample("demo.fcs")
+
+    window.workspace.add_sample(sample)
+    window._sync_from_workspace()
+    window._refresh_sample_list(select_active=True)
+
+    window.on_assign_sample_group(0, "Controls")
+
+    assert window.workspace.samples[0].group_name == "Controls"
+    assert any(
+        window.sample_panel.group_list.item(row).text() == "Controls"
+        for row in range(window.sample_panel.group_list.count())
+    )
+    assert window.sample_panel.sample_list.item(0).text() == "demo.fcs"
+
+
+def test_group_selection_filters_visible_samples() -> None:
+    get_app()
+    window = MainWindow()
+    window.workspace.add_sample(make_sample("a.fcs"), group_name="Controls")
+    window.workspace.add_sample(make_sample("b.fcs"), group_name="Specimen 1")
+    window._refresh_group_list()
+    window._refresh_sample_list(select_active=True)
+
+    window.on_group_selection_changed("Controls")
+
+    assert window.sample_panel.sample_list.count() == 1
+    assert window.sample_panel.sample_list.item(0).text() == "a.fcs"
+
+
+def test_group_annotations_update_details_panel() -> None:
+    get_app()
+    window = MainWindow()
+    group = window.workspace.ensure_group("Controls")
+    group.notes = "Tube A, unstained baseline"
+    window._refresh_group_list()
+
+    window.on_group_selection_changed("Controls")
+
+    assert window.sample_panel.group_notes_label.text() == "Notes: Tube A, unstained baseline"
+
+
+def test_apply_active_gate_to_group_copies_gate_to_matching_group() -> None:
+    get_app()
+    window = MainWindow()
+    source = make_sample("source.fcs")
+    target = make_sample("target.fcs")
+    other = make_sample("other.fcs")
+
+    source_state = window.workspace.add_sample(source, group_name="Controls")
+    source_gate = RangeGate(
+        name="Live",
+        parent_name="All events",
+        channel_index=0,
+        channel_label="FSC-A",
+        x_min=2.0,
+        x_max=5.0,
+        event_count=2,
+        percentage_parent=50.0,
+        percentage_total=50.0,
+        full_mask=np.array([False, True, True, False]),
+    )
+    source_state.gates.append(source_gate)
+    source_state.active_gate_name = "Live"
+    window.workspace.add_sample(target, group_name="Controls")
+    window.workspace.add_sample(other, group_name="Specimen 1")
+
+    window.on_apply_active_gate_to_group(0)
+
+    assert len(window.workspace.samples[1].gates) == 1
+    assert window.workspace.samples[1].gates[0].name == "Live"
+    assert window.workspace.samples[1].gates[0].full_mask.tolist() == [False, True, True, False]
+    assert window.workspace.samples[2].gates == []
+
+
+def test_apply_all_gates_to_all_samples_preserves_hierarchy() -> None:
+    get_app()
+    window = MainWindow()
+    source = make_sample("source.fcs")
+    target = make_sample("target.fcs")
+
+    source_state = window.workspace.add_sample(source, group_name="Specimen 1")
+    parent_gate = RangeGate(
+        name="Parent",
+        parent_name="All events",
+        channel_index=0,
+        channel_label="FSC-A",
+        x_min=2.0,
+        x_max=5.0,
+        event_count=2,
+        percentage_parent=50.0,
+        percentage_total=50.0,
+        full_mask=np.array([False, True, True, False]),
+    )
+    child_gate = RangeGate(
+        name="Child",
+        parent_name="Parent",
+        channel_index=1,
+        channel_label="SSC-A",
+        x_min=3.0,
+        x_max=6.0,
+        event_count=2,
+        percentage_parent=100.0,
+        percentage_total=50.0,
+        full_mask=np.array([False, True, True, False]),
+    )
+    source_state.gates.extend([parent_gate, child_gate])
+    window.workspace.add_sample(target, group_name="Specimen 2")
+
+    window.on_apply_all_gates_to_all_samples(0)
+
+    cloned_parent, cloned_child = window.workspace.samples[1].gates
+    assert cloned_parent.name == "Parent"
+    assert cloned_child.parent_name == "Parent"
+    assert cloned_parent.full_mask.tolist() == [False, True, True, False]
+    assert cloned_child.full_mask.tolist() == [False, True, True, False]
 
 
 def test_rename_active_gate_updates_model_and_list() -> None:

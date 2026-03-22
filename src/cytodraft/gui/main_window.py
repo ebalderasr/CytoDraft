@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QSignalBlocker, Qt
 from PySide6.QtGui import QAction, QColor
 from PySide6.QtWidgets import (
     QColorDialog,
@@ -27,7 +27,12 @@ from cytodraft.core.gating import (
 from cytodraft.core.statistics import StatisticResult, calculate_population_statistics
 from cytodraft.core.transforms import apply_scale, axis_label
 from cytodraft.gui.panels import InspectorPanel, SamplePanel
-from cytodraft.gui.plot_widget import CytometryPlotWidget
+from cytodraft.gui.plot_widget import (
+    CytometryPlotWidget,
+    HistogramGateOverlay,
+    HistogramOverlay,
+    ScatterGateOverlay,
+)
 from cytodraft.models.gate import (
     CircleGate,
     DEFAULT_GATE_COLOR,
@@ -36,7 +41,15 @@ from cytodraft.models.gate import (
     RectangleGate,
 )
 from cytodraft.models.sample import SampleData
+from cytodraft.models.workspace import (
+    DEFAULT_GROUP_NAME,
+    WorkspaceSample,
+    WorkspaceState,
+)
+from cytodraft.services.gate_service import GateService
 from cytodraft.services.sample_service import SampleService
+
+GateModel = RectangleGate | RangeGate | PolygonGate | CircleGate
 
 
 class MainWindow(QMainWindow):
@@ -48,6 +61,9 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(960, 680)
 
         self.sample_service = SampleService()
+        self.gate_service = GateService()
+        self.workspace = WorkspaceState()
+        self.selected_group_name: str | None = None
         self.current_sample: SampleData | None = None
         self.gates: list[RectangleGate | RangeGate | PolygonGate | CircleGate] = []
         self.active_gate: RectangleGate | RangeGate | PolygonGate | CircleGate | None = None
@@ -109,7 +125,17 @@ class MainWindow(QMainWindow):
         self.about_action.triggered.connect(self.show_about_dialog)
         self.sample_panel.add_sample_button.clicked.connect(self.open_fcs_dialog)
         self.sample_panel.remove_sample_button.clicked.connect(self.remove_selected_sample)
+        self.sample_panel.group_selection_changed.connect(self.on_group_selection_changed)
+        self.sample_panel.rename_group_requested.connect(self.on_rename_group)
+        self.sample_panel.recolor_group_requested.connect(self.on_recolor_group)
+        self.sample_panel.annotate_group_requested.connect(self.on_annotate_group)
         self.sample_panel.sample_selection_changed.connect(self.on_sample_selection_changed)
+        self.sample_panel.assign_sample_group_requested.connect(self.on_assign_sample_group)
+        self.sample_panel.assign_custom_sample_group_requested.connect(self.on_assign_custom_sample_group)
+        self.sample_panel.apply_active_gate_to_group_requested.connect(self.on_apply_active_gate_to_group)
+        self.sample_panel.apply_all_gates_to_group_requested.connect(self.on_apply_all_gates_to_group)
+        self.sample_panel.apply_active_gate_to_all_requested.connect(self.on_apply_active_gate_to_all_samples)
+        self.sample_panel.apply_all_gates_to_all_requested.connect(self.on_apply_all_gates_to_all_samples)
         self.sample_panel.gate_selection_changed.connect(self.on_gate_selection_changed)
         self.sample_panel.rename_gate_context_requested.connect(self.on_rename_gate_from_context)
         self.sample_panel.recolor_gate_context_requested.connect(self.on_recolor_gate_from_context)
@@ -154,31 +180,102 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("Failed to load FCS file", 5000)
             return
 
-        self.current_sample = sample
-        self.gates = []
-        self.active_gate = None
+        self.workspace.add_sample(sample)
+        self._sync_from_workspace()
         self._clear_statistics_results()
-
-        self.sample_panel.reset_samples()
-        self.sample_panel.add_sample(sample.file_name)
-        self.sample_panel.reset_gates()
-        self._update_population_context_labels()
-
-        self._update_inspector(sample)
-        self._configure_axis_selectors(sample)
-        self.redraw_current_plot()
+        self._refresh_group_list()
+        self._refresh_sample_list(select_active=True)
+        self._refresh_gate_panel()
+        self._show_active_sample()
 
         self.statusBar().showMessage(
             f"Loaded {sample.file_name} | {sample.event_count} events | {sample.channel_count} channels",
             6000,
         )
 
+    def _active_workspace_sample(self) -> WorkspaceSample | None:
+        return self.workspace.active_sample
+
+    def _sync_from_workspace(self) -> None:
+        workspace_sample = self._active_workspace_sample()
+        if workspace_sample is None:
+            self.current_sample = None
+            self.gates = []
+            self.active_gate = None
+            return
+
+        self.current_sample = workspace_sample.sample
+        self.gates = workspace_sample.gates
+        self.active_gate = next(
+            (gate for gate in self.gates if gate.name == workspace_sample.active_gate_name),
+            None,
+        )
+
+    def _refresh_sample_list(self, *, select_active: bool = False) -> None:
+        active_index = self.workspace.active_sample_index
+        with QSignalBlocker(self.sample_panel.sample_list):
+            self.sample_panel.reset_samples()
+            for workspace_index, workspace_sample in self.workspace.samples_in_group(self.selected_group_name):
+                self.sample_panel.add_sample(workspace_sample.sample.file_name, workspace_index)
+            if select_active and active_index is not None:
+                for row in range(self.sample_panel.sample_list.count()):
+                    item = self.sample_panel.sample_list.item(row)
+                    if item.data(Qt.UserRole) == active_index:
+                        self.sample_panel.sample_list.setCurrentRow(row)
+                        break
+        self.sample_panel.remove_sample_button.setEnabled(active_index is not None)
+
+    def _refresh_group_list(self) -> None:
+        current_group_name = self.selected_group_name
+        with QSignalBlocker(self.sample_panel.group_list):
+            self.sample_panel.reset_groups()
+            for group_name in sorted(self.workspace.groups):
+                group = self.workspace.groups[group_name]
+                self.sample_panel.add_group(group.name, group.color_hex, group.notes)
+            self.sample_panel.select_group(current_group_name)
+            if self.sample_panel.current_group_name() is None and self.sample_panel.group_list.count() > 0:
+                self.sample_panel.group_list.setCurrentRow(0)
+        self._refresh_group_notes()
+
+    def _refresh_group_notes(self) -> None:
+        if self.selected_group_name is None:
+            self.sample_panel.set_group_notes("")
+            return
+        group = self.workspace.groups.get(self.selected_group_name)
+        self.sample_panel.set_group_notes("" if group is None else group.notes)
+
+    def _refresh_gate_panel(self) -> None:
+        with QSignalBlocker(self.sample_panel.gate_list):
+            self.sample_panel.reset_gates()
+            for gate in self.gates:
+                self.sample_panel.add_gate(self._gate_list_label(gate), select=False)
+            self._refresh_gate_list_labels()
+            if self.active_gate is None:
+                self.sample_panel.select_gate_row(0)
+                self.inspector_panel.set_active_gate("All events")
+                self.inspector_panel.set_gate_editor_state(None, None)
+            else:
+                self.sample_panel.select_gate_row(self.gates.index(self.active_gate) + 1)
+                self.inspector_panel.set_active_gate(self.active_gate.name)
+                self.inspector_panel.set_gate_editor_state(self.active_gate.name, self.active_gate.color_hex)
+        self._update_population_context_labels()
+        self._refresh_statistics_population_options()
+
+    def _show_active_sample(self) -> None:
+        if self.current_sample is None:
+            self.clear_loaded_sample()
+            return
+
+        self._update_inspector(self.current_sample)
+        self._configure_axis_selectors(self.current_sample)
+        self.redraw_current_plot(show_status=False)
+
     def _update_inspector(self, sample: SampleData) -> None:
         self.inspector_panel.set_file_info(
             file_name=sample.file_name,
             events=str(sample.event_count),
             channels=str(sample.channel_count),
-            active_gate="All events",
+            active_gate=self.current_population_name(),
         )
         self.inspector_panel.set_displayed_points(None, None)
 
@@ -271,6 +368,65 @@ class MainWindow(QMainWindow):
         indent = "  " * depth
         return f"{indent}{gate.name} <- {gate.parent_name} | {gate.event_count:,} events ({gate.percentage_parent:.2f}% parent, {gate.percentage_total:.2f}% total)"
 
+    def _scatter_gate_overlay_for_gate(
+        self,
+        gate: GateModel,
+        *,
+        x_idx: int,
+        y_idx: int,
+    ) -> ScatterGateOverlay | None:
+        if isinstance(gate, RectangleGate):
+            if gate.x_channel_index != x_idx or gate.y_channel_index != y_idx:
+                return None
+            return ScatterGateOverlay(
+                kind="rectangle",
+                color_hex=gate.color_hex,
+                x_min=gate.x_min,
+                x_max=gate.x_max,
+                y_min=gate.y_min,
+                y_max=gate.y_max,
+            )
+
+        if isinstance(gate, PolygonGate):
+            if gate.x_channel_index != x_idx or gate.y_channel_index != y_idx:
+                return None
+            return ScatterGateOverlay(
+                kind="polygon",
+                color_hex=gate.color_hex,
+                vertices=gate.vertices,
+            )
+
+        if isinstance(gate, CircleGate):
+            if gate.x_channel_index != x_idx or gate.y_channel_index != y_idx:
+                return None
+            return ScatterGateOverlay(
+                kind="ellipse",
+                color_hex=gate.color_hex,
+                center_x=gate.center_x,
+                center_y=gate.center_y,
+                radius_x=gate.radius_x or gate.radius,
+                radius_y=gate.radius_y or gate.radius,
+            )
+
+        return None
+
+    def _histogram_gate_overlay_for_gate(
+        self,
+        gate: GateModel,
+        *,
+        x_idx: int,
+    ) -> HistogramGateOverlay | None:
+        if not isinstance(gate, RangeGate):
+            return None
+        if gate.channel_index != x_idx:
+            return None
+        return HistogramGateOverlay(
+            kind="range",
+            color_hex=gate.color_hex,
+            x_min=gate.x_min,
+            x_max=gate.x_max,
+        )
+
     def _update_population_context_labels(self) -> None:
         current_name = self.current_population_name()
         if self.active_gate is None:
@@ -309,10 +465,13 @@ class MainWindow(QMainWindow):
         return self.active_gate.color_hex
 
     def clear_loaded_sample(self) -> None:
+        self.workspace = WorkspaceState()
+        self.selected_group_name = None
         self.current_sample = None
         self.gates = []
         self.active_gate = None
 
+        self.sample_panel.reset_groups()
         self.sample_panel.reset_samples()
         self.sample_panel.reset_gates()
         self._update_population_context_labels()
@@ -326,25 +485,99 @@ class MainWindow(QMainWindow):
         self.plot_panel.show_placeholder_data()
 
     def remove_selected_sample(self) -> None:
-        if self.current_sample is None or self.sample_panel.sample_list.currentRow() < 0:
+        sample_index = self.sample_panel.current_sample_workspace_index()
+        if self.current_sample is None or sample_index is None:
             self.statusBar().showMessage("No sample selected", 3000)
             return
 
-        removed_name = self.current_sample.file_name
-        self.clear_loaded_sample()
+        removed_name = self.workspace.remove_sample(sample_index).sample.file_name
+        self._sync_from_workspace()
+        self._clear_statistics_results()
+        self._refresh_group_list()
+        self._refresh_sample_list(select_active=True)
+        if self.current_sample is None:
+            self.clear_loaded_sample()
+        else:
+            self._refresh_gate_panel()
+            self._show_active_sample()
         self.statusBar().showMessage(f"Removed {removed_name}", 4000)
 
     def on_sample_selection_changed(self, row: int) -> None:
         if row < 0:
             return
+        if row >= len(self.workspace.samples):
+            return
 
-        # The current app state supports a single active sample.
-        if row > 0:
-            self.sample_panel.sample_list.setCurrentRow(0)
-            self.statusBar().showMessage(
-                "CytoDraft currently supports one loaded sample at a time",
-                4000,
-            )
+        self.workspace.active_sample_index = row
+        self._sync_from_workspace()
+        self._clear_statistics_results()
+        self._refresh_gate_panel()
+        self._show_active_sample()
+        if self.current_sample is not None:
+            self.statusBar().showMessage(f"Focused on {self.current_sample.file_name}", 4000)
+
+    def on_group_selection_changed(self, group_name: object) -> None:
+        resolved_group_name = None if group_name is None else str(group_name)
+        self.selected_group_name = resolved_group_name
+        self._refresh_group_notes()
+        self._refresh_sample_list(select_active=True)
+
+    def on_rename_group(self, group_name: str) -> None:
+        group = self.workspace.groups.get(group_name)
+        if group is None:
+            return
+        new_name, accepted = QInputDialog.getText(
+            self,
+            "Rename group",
+            "Group name:",
+            text=group.name,
+        )
+        if not accepted:
+            return
+        normalized = new_name.strip()
+        if not normalized:
+            QMessageBox.warning(self, "Rename group", "Group name cannot be empty.")
+            return
+        self.workspace.rename_group(group_name, normalized)
+        if self.selected_group_name == group_name:
+            self.selected_group_name = normalized
+        self._refresh_group_list()
+        self._refresh_sample_list(select_active=True)
+        self.statusBar().showMessage(f"Renamed group to {normalized}", 4000)
+
+    def on_recolor_group(self, group_name: str) -> None:
+        group = self.workspace.groups.get(group_name)
+        if group is None:
+            return
+        color = QColorDialog.getColor(
+            QColor(group.color_hex),
+            self,
+            f"Select color for {group.name}",
+        )
+        if not color.isValid():
+            return
+        group.color_hex = color.name().lower()
+        self._refresh_group_list()
+        self.statusBar().showMessage(
+            f"Changed {group.name} color to {group.color_hex}",
+            4000,
+        )
+
+    def on_annotate_group(self, group_name: str) -> None:
+        group = self.workspace.groups.get(group_name)
+        if group is None:
+            return
+        notes, accepted = QInputDialog.getMultiLineText(
+            self,
+            "Group annotations",
+            "Notes:",
+            text=group.notes,
+        )
+        if not accepted:
+            return
+        group.notes = notes.strip()
+        self._refresh_group_list()
+        self.statusBar().showMessage(f"Updated annotations for {group.name}", 4000)
 
     def redraw_current_plot(self, *, show_status: bool = True) -> None:
         if self.current_sample is None:
@@ -397,6 +630,12 @@ class MainWindow(QMainWindow):
         limit_enabled, max_points = self.inspector_panel.sampling_settings()
         display_limit = max_points if limit_enabled else None
         subpopulation_overlays: list[tuple[np.ndarray, np.ndarray, str]] = []
+        gate_overlays: list[ScatterGateOverlay] = []
+
+        if self.active_gate is not None:
+            active_overlay = self._scatter_gate_overlay_for_gate(self.active_gate, x_idx=x_idx, y_idx=y_idx)
+            if active_overlay is not None:
+                gate_overlays.append(active_overlay)
 
         if self.inspector_panel.show_subpopulations_enabled():
             current_name = self.current_population_name()
@@ -414,6 +653,9 @@ class MainWindow(QMainWindow):
                         child_gate.color_hex,
                     )
                 )
+                child_overlay = self._scatter_gate_overlay_for_gate(child_gate, x_idx=x_idx, y_idx=y_idx)
+                if child_overlay is not None:
+                    gate_overlays.append(child_overlay)
 
         displayed_count, total_count = self.plot_panel.plot_scatter(
             x,
@@ -425,6 +667,7 @@ class MainWindow(QMainWindow):
             selected_mask=None,
             point_color=self.current_population_color(),
             subpopulation_overlays=subpopulation_overlays,
+            gate_overlays=gate_overlays,
         )
 
         x_min, x_max, y_min, y_max = self.inspector_panel.current_view_limits()
@@ -463,8 +706,15 @@ class MainWindow(QMainWindow):
         x_scale, _ = self.inspector_panel.current_scales()
         x = apply_scale(raw_x, x_scale)
         x = x[np.isfinite(x)]
+        histogram_subpopulation_overlays: list[HistogramOverlay] = []
+        histogram_gate_overlays: list[HistogramGateOverlay] = []
 
         x_label = axis_label(sample.channel_label(x_idx), x_scale)
+
+        if self.active_gate is not None:
+            active_gate_overlay = self._histogram_gate_overlay_for_gate(self.active_gate, x_idx=x_idx)
+            if active_gate_overlay is not None:
+                histogram_gate_overlays.append(active_gate_overlay)
 
         if len(x) == 0:
             self.plot_panel.show_empty_message("No plottable events under current axis scales")
@@ -473,10 +723,29 @@ class MainWindow(QMainWindow):
                 self.statusBar().showMessage("No plottable events under current axis scales", 4000)
             return
 
+        if self.inspector_panel.show_subpopulations_enabled():
+            current_name = self.current_population_name()
+            for child_gate in self._children_of_population(current_name):
+                child_values = apply_scale(sample.events[child_gate.full_mask, x_idx], x_scale)
+                child_values = child_values[np.isfinite(child_values)]
+                if len(child_values) > 0:
+                    histogram_subpopulation_overlays.append(
+                        HistogramOverlay(
+                            values=child_values,
+                            color_hex=child_gate.color_hex,
+                            label=child_gate.name,
+                        )
+                    )
+                child_gate_overlay = self._histogram_gate_overlay_for_gate(child_gate, x_idx=x_idx)
+                if child_gate_overlay is not None:
+                    histogram_gate_overlays.append(child_gate_overlay)
+
         displayed_count, total_count = self.plot_panel.plot_histogram(
             x,
             x_label,
             title=f"{sample.file_name} | {self.current_population_name()} | Histogram of {x_label}",
+            subpopulation_overlays=histogram_subpopulation_overlays,
+            gate_overlays=histogram_gate_overlays,
         )
 
         x_min, x_max, y_min, y_max = self.inspector_panel.current_view_limits()
@@ -527,6 +796,9 @@ class MainWindow(QMainWindow):
 
         if row <= 0:
             self.active_gate = None
+            workspace_sample = self._active_workspace_sample()
+            if workspace_sample is not None:
+                workspace_sample.active_gate_name = None
             self.inspector_panel.set_active_gate("All events")
             self.inspector_panel.set_gate_editor_state(None, None)
         else:
@@ -534,6 +806,9 @@ class MainWindow(QMainWindow):
             if gate_index >= len(self.gates):
                 return
             self.active_gate = self.gates[gate_index]
+            workspace_sample = self._active_workspace_sample()
+            if workspace_sample is not None:
+                workspace_sample.active_gate_name = self.active_gate.name
             self.inspector_panel.set_active_gate(self.active_gate.name)
             self.inspector_panel.set_gate_editor_state(
                 self.active_gate.name,
@@ -703,6 +978,8 @@ class MainWindow(QMainWindow):
             percentage_parent=percentage_parent,
             percentage_total=percentage_total,
             full_mask=full_mask,
+            x_scale=x_scale,
+            y_scale=y_scale,
             color_hex=gate_color,
         )
 
@@ -773,6 +1050,8 @@ class MainWindow(QMainWindow):
             percentage_parent=percentage_parent,
             percentage_total=percentage_total,
             full_mask=full_mask,
+            x_scale=x_scale,
+            y_scale=y_scale,
             color_hex=gate_color,
         )
 
@@ -809,14 +1088,16 @@ class MainWindow(QMainWindow):
         x = apply_scale(sample.events[:, x_idx], x_scale)
         y = apply_scale(sample.events[:, y_idx], y_scale)
 
-        center_x, center_y, radius = geometry
+        center_x, center_y, radius_x, radius_y = geometry
         full_mask = circle_mask_from_parent(
             x,
             y,
             parent_mask,
             center_x=center_x,
             center_y=center_y,
-            radius=radius,
+            radius=radius_x,
+            radius_x=radius_x,
+            radius_y=radius_y,
         )
 
         event_count = int(full_mask.sum())
@@ -843,11 +1124,15 @@ class MainWindow(QMainWindow):
             y_label=sample.channel_label(y_idx),
             center_x=center_x,
             center_y=center_y,
-            radius=radius,
+            radius=max(radius_x, radius_y),
+            radius_x=radius_x,
+            radius_y=radius_y,
             event_count=event_count,
             percentage_parent=percentage_parent,
             percentage_total=percentage_total,
             full_mask=full_mask,
+            x_scale=x_scale,
+            y_scale=y_scale,
             color_hex=gate_color,
         )
 
@@ -917,6 +1202,7 @@ class MainWindow(QMainWindow):
             percentage_parent=percentage_parent,
             percentage_total=percentage_total,
             full_mask=full_mask,
+            x_scale=x_scale,
             color_hex=gate_color,
         )
 
@@ -929,9 +1215,12 @@ class MainWindow(QMainWindow):
 
     def _store_and_select_new_gate(
         self,
-        gate: RectangleGate | RangeGate | PolygonGate | CircleGate,
+        gate: GateModel,
     ) -> None:
         self.gates.append(gate)
+        workspace_sample = self._active_workspace_sample()
+        if workspace_sample is not None:
+            workspace_sample.active_gate_name = gate.name
         self._clear_statistics_results()
         self._refresh_statistics_population_options()
         self.sample_panel.add_gate(self._gate_list_label(gate), select=False)
@@ -957,6 +1246,9 @@ class MainWindow(QMainWindow):
 
         old_name = self.active_gate.name
         self.active_gate.name = new_name
+        workspace_sample = self._active_workspace_sample()
+        if workspace_sample is not None and workspace_sample.active_gate_name == old_name:
+            workspace_sample.active_gate_name = new_name
         for gate in self.gates:
             if gate.parent_name == old_name:
                 gate.parent_name = new_name
@@ -1030,20 +1322,16 @@ class MainWindow(QMainWindow):
         if answer != QMessageBox.StandardButton.Yes:
             return
 
-        names_to_delete = {gate.name}
-        changed = True
-        while changed:
-            changed = False
-            for candidate in self.gates:
-                if candidate.parent_name in names_to_delete and candidate.name not in names_to_delete:
-                    names_to_delete.add(candidate.name)
-                    changed = True
-
-        self.gates = [candidate for candidate in self.gates if candidate.name not in names_to_delete]
+        names_to_delete = self._gate_subtree_names(self.gates, gate.name)
+        remaining_gates = [candidate for candidate in self.gates if candidate.name not in names_to_delete]
+        self.gates[:] = remaining_gates
         self.sample_panel.reset_gates()
         for remaining_gate in self.gates:
             self.sample_panel.add_gate(self._gate_list_label(remaining_gate), select=False)
         self.active_gate = None
+        workspace_sample = self._active_workspace_sample()
+        if workspace_sample is not None:
+            workspace_sample.active_gate_name = None
         self._clear_statistics_results()
         self.sample_panel.select_gate_row(0)
         self.inspector_panel.set_active_gate("All events")
@@ -1208,6 +1496,153 @@ class MainWindow(QMainWindow):
             f"Exported {self.active_gate.name} to {output_path}",
             6000,
         )
+
+    def on_assign_sample_group(self, sample_index: int, group_name: str) -> None:
+        if sample_index < 0 or sample_index >= len(self.workspace.samples):
+            return
+        workspace_sample = self.workspace.samples[sample_index]
+        normalized_group = group_name.strip() or DEFAULT_GROUP_NAME
+        self.workspace.ensure_group(normalized_group)
+        workspace_sample.group_name = normalized_group
+        self._refresh_group_list()
+        self._refresh_sample_list(select_active=True)
+        self.statusBar().showMessage(
+            f"{workspace_sample.sample.file_name} assigned to {workspace_sample.group_name}",
+            4000,
+        )
+
+    def on_assign_custom_sample_group(self, sample_index: int) -> None:
+        if sample_index < 0 or sample_index >= len(self.workspace.samples):
+            return
+        workspace_sample = self.workspace.samples[sample_index]
+        group_name, accepted = QInputDialog.getText(
+            self,
+            "Assign group",
+            "Group name:",
+            text=workspace_sample.group_name,
+        )
+        if not accepted:
+            return
+        normalized = group_name.strip()
+        if not normalized:
+            QMessageBox.warning(self, "Assign group", "Group name cannot be empty.")
+            return
+        self.on_assign_sample_group(sample_index, normalized)
+
+    def on_apply_active_gate_to_group(self, sample_index: int) -> None:
+        self._propagate_gates(sample_index, mode="active_gate", scope="group")
+
+    def on_apply_all_gates_to_group(self, sample_index: int) -> None:
+        self._propagate_gates(sample_index, mode="all_gates", scope="group")
+
+    def on_apply_active_gate_to_all_samples(self, sample_index: int) -> None:
+        self._propagate_gates(sample_index, mode="active_gate", scope="all")
+
+    def on_apply_all_gates_to_all_samples(self, sample_index: int) -> None:
+        self._propagate_gates(sample_index, mode="all_gates", scope="all")
+
+    def _propagate_gates(self, sample_index: int, *, mode: str, scope: str) -> None:
+        if sample_index < 0 or sample_index >= len(self.workspace.samples):
+            return
+
+        source_sample = self.workspace.samples[sample_index]
+        source_gates = source_sample.gates
+        if mode == "active_gate":
+            if source_sample.active_gate_name is None:
+                self.statusBar().showMessage("Select an active gate in the source sample first", 5000)
+                return
+            gates_to_apply = [gate for gate in source_gates if gate.name == source_sample.active_gate_name]
+        else:
+            gates_to_apply = list(source_gates)
+
+        if not gates_to_apply:
+            self.statusBar().showMessage("The source sample has no gates to propagate", 5000)
+            return
+
+        if scope == "group":
+            target_samples = [
+                candidate
+                for idx, candidate in enumerate(self.workspace.samples)
+                if idx != sample_index and candidate.group_name == source_sample.group_name
+            ]
+            scope_label = f"group {source_sample.group_name}"
+        else:
+            target_samples = [
+                candidate
+                for idx, candidate in enumerate(self.workspace.samples)
+                if idx != sample_index
+            ]
+            scope_label = "all samples"
+
+        if not target_samples:
+            self.statusBar().showMessage(f"No target samples available in {scope_label}", 5000)
+            return
+
+        applied_count = 0
+        failures: list[str] = []
+        for target in target_samples:
+            try:
+                if mode == "active_gate":
+                    self._upsert_gate_on_sample(target, gates_to_apply[0])
+                else:
+                    self._replace_gates_on_sample(target, gates_to_apply)
+                applied_count += 1
+            except Exception as exc:
+                failures.append(f"{target.sample.file_name}: {exc}")
+
+        if self.workspace.active_sample_index is not None:
+            self._sync_from_workspace()
+            self._refresh_gate_panel()
+            self.redraw_current_plot(show_status=False)
+
+        if failures and applied_count == 0:
+            QMessageBox.warning(self, "Apply gates", "\n".join(failures))
+            self.statusBar().showMessage("No gates were propagated", 5000)
+            return
+
+        if failures:
+            QMessageBox.warning(self, "Apply gates", "\n".join(failures))
+            self.statusBar().showMessage(
+                f"Propagated gates to {applied_count} sample(s); {len(failures)} failed",
+                6000,
+            )
+            return
+
+        self.statusBar().showMessage(
+            f"Propagated {mode.replace('_', ' ')} from {source_sample.sample.file_name} to {applied_count} sample(s) in {scope_label}",
+            6000,
+        )
+
+    def _replace_gates_on_sample(self, target_sample: WorkspaceSample, source_gates: list[GateModel]) -> None:
+        for gate in source_gates:
+            self._delete_gate_subtree(target_sample.gates, gate.name)
+        cloned_gates = self.gate_service.clone_gate_sequence_to_sample(source_gates, target_sample.sample)
+        target_sample.gates.extend(cloned_gates)
+        if target_sample.active_gate_name and all(
+            gate.name != target_sample.active_gate_name for gate in target_sample.gates
+        ):
+            target_sample.active_gate_name = None
+
+    def _upsert_gate_on_sample(self, target_sample: WorkspaceSample, gate: GateModel) -> None:
+        self._delete_gate_subtree(target_sample.gates, gate.name)
+        cloned_gate = self.gate_service.clone_gate_to_sample(gate, target_sample.sample, target_sample.gates)
+        target_sample.gates.append(cloned_gate)
+
+    @staticmethod
+    def _gate_subtree_names(gates: list[GateModel], root_name: str) -> set[str]:
+        names_to_delete = {root_name}
+        changed = True
+        while changed:
+            changed = False
+            for candidate in gates:
+                if candidate.parent_name in names_to_delete and candidate.name not in names_to_delete:
+                    names_to_delete.add(candidate.name)
+                    changed = True
+        return names_to_delete
+
+    def _delete_gate_subtree(self, gates: list[GateModel], root_name: str) -> None:
+        names_to_delete = self._gate_subtree_names(gates, root_name)
+        gates[:] = [candidate for candidate in gates if candidate.name not in names_to_delete]
 
     def show_about_dialog(self) -> None:
         QMessageBox.about(
