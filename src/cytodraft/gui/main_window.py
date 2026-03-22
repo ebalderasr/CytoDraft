@@ -2,8 +2,15 @@ from __future__ import annotations
 
 import numpy as np
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QAction
-from PySide6.QtWidgets import QFileDialog, QMainWindow, QMessageBox, QSplitter
+from PySide6.QtGui import QAction, QColor
+from PySide6.QtWidgets import (
+    QColorDialog,
+    QFileDialog,
+    QInputDialog,
+    QMainWindow,
+    QMessageBox,
+    QSplitter,
+)
 
 from cytodraft.core.export import export_masked_events_to_csv
 from cytodraft.core.fcs_reader import choose_default_axes
@@ -15,7 +22,12 @@ from cytodraft.core.gating import (
 from cytodraft.core.transforms import apply_scale, axis_label
 from cytodraft.gui.panels import InspectorPanel, SamplePanel
 from cytodraft.gui.plot_widget import CytometryPlotWidget
-from cytodraft.models.gate import PolygonGate, RangeGate, RectangleGate
+from cytodraft.models.gate import (
+    DEFAULT_GATE_COLOR,
+    PolygonGate,
+    RangeGate,
+    RectangleGate,
+)
 from cytodraft.models.sample import SampleData
 from cytodraft.services.sample_service import SampleService
 
@@ -84,7 +96,12 @@ class MainWindow(QMainWindow):
         self.exit_action.triggered.connect(self.close)
         self.about_action.triggered.connect(self.show_about_dialog)
         self.sample_panel.add_sample_button.clicked.connect(self.open_fcs_dialog)
+        self.sample_panel.remove_sample_button.clicked.connect(self.remove_selected_sample)
+        self.sample_panel.sample_selection_changed.connect(self.on_sample_selection_changed)
         self.sample_panel.gate_selection_changed.connect(self.on_gate_selection_changed)
+        self.sample_panel.rename_gate_context_requested.connect(self.on_rename_gate_from_context)
+        self.sample_panel.recolor_gate_context_requested.connect(self.on_recolor_gate_from_context)
+        self.sample_panel.delete_gate_context_requested.connect(self.on_delete_gate_from_context)
         self.inspector_panel.axes_changed.connect(self.on_axes_changed)
         self.inspector_panel.plot_mode_changed.connect(self.on_plot_mode_changed)
         self.inspector_panel.sampling_changed.connect(self.on_sampling_changed)
@@ -94,6 +111,8 @@ class MainWindow(QMainWindow):
         self.inspector_panel.apply_gate_requested.connect(self.on_apply_gate)
         self.inspector_panel.clear_gate_requested.connect(self.on_clear_draft_gate)
         self.inspector_panel.export_gate_requested.connect(self.on_export_active_gate)
+        self.inspector_panel.rename_gate_requested.connect(self.on_rename_active_gate)
+        self.inspector_panel.recolor_gate_requested.connect(self.on_recolor_active_gate)
 
     def open_fcs_dialog(self) -> None:
         file_path, _ = QFileDialog.getOpenFileName(
@@ -125,6 +144,7 @@ class MainWindow(QMainWindow):
         self.gates = []
         self.active_gate = None
 
+        self.sample_panel.reset_samples()
         self.sample_panel.add_sample(sample.file_name)
         self.sample_panel.reset_gates()
 
@@ -169,6 +189,46 @@ class MainWindow(QMainWindow):
         if self.active_gate is None:
             return "All events"
         return self.active_gate.name
+
+    def current_population_color(self) -> str:
+        if self.active_gate is None:
+            return "#466ebe"
+        return self.active_gate.color_hex
+
+    def clear_loaded_sample(self) -> None:
+        self.current_sample = None
+        self.gates = []
+        self.active_gate = None
+
+        self.sample_panel.reset_samples()
+        self.sample_panel.reset_gates()
+        self.inspector_panel.set_file_info()
+        self.inspector_panel.set_displayed_points(None, None)
+        self.inspector_panel.set_gate_editor_state(None, None)
+        self.inspector_panel.clear_channels()
+        self.plot_panel.clear_all_rois()
+        self.plot_panel.show_placeholder_data()
+
+    def remove_selected_sample(self) -> None:
+        if self.current_sample is None or self.sample_panel.sample_list.currentRow() < 0:
+            self.statusBar().showMessage("No sample selected", 3000)
+            return
+
+        removed_name = self.current_sample.file_name
+        self.clear_loaded_sample()
+        self.statusBar().showMessage(f"Removed {removed_name}", 4000)
+
+    def on_sample_selection_changed(self, row: int) -> None:
+        if row < 0:
+            return
+
+        # The current app state supports a single active sample.
+        if row > 0:
+            self.sample_panel.sample_list.setCurrentRow(0)
+            self.statusBar().showMessage(
+                "CytoDraft currently supports one loaded sample at a time",
+                4000,
+            )
 
     def redraw_current_plot(self, *, show_status: bool = True) -> None:
         if self.current_sample is None:
@@ -229,6 +289,7 @@ class MainWindow(QMainWindow):
             title=f"{sample.file_name} | {self.current_population_name()} | {y_label} vs {x_label}",
             max_points=display_limit,
             selected_mask=None,
+            point_color=self.current_population_color(),
         )
 
         x_min, x_max, y_min, y_max = self.inspector_panel.current_view_limits()
@@ -332,12 +393,17 @@ class MainWindow(QMainWindow):
         if row <= 0:
             self.active_gate = None
             self.inspector_panel.set_active_gate("All events")
+            self.inspector_panel.set_gate_editor_state(None, None)
         else:
             gate_index = row - 1
             if gate_index >= len(self.gates):
                 return
             self.active_gate = self.gates[gate_index]
             self.inspector_panel.set_active_gate(self.active_gate.name)
+            self.inspector_panel.set_gate_editor_state(
+                self.active_gate.name,
+                self.active_gate.color_hex,
+            )
 
         self.redraw_current_plot(show_status=False)
 
@@ -393,6 +459,37 @@ class MainWindow(QMainWindow):
         else:
             self._apply_rectangle_gate()
 
+    def prompt_for_gate_details(
+        self,
+        *,
+        initial_name: str,
+        initial_color: str,
+        title: str,
+    ) -> tuple[str, str] | None:
+        gate_name, accepted = QInputDialog.getText(
+            self,
+            title,
+            "Gate name:",
+            text=initial_name,
+        )
+        if not accepted:
+            return None
+
+        normalized_name = gate_name.strip()
+        if not normalized_name:
+            QMessageBox.warning(self, title, "Gate name cannot be empty.")
+            return None
+
+        color = QColorDialog.getColor(
+            QColor(initial_color),
+            self,
+            f"{title}: gate color",
+        )
+        if not color.isValid():
+            return None
+
+        return normalized_name, color.name().lower()
+
     def _apply_rectangle_gate(self) -> None:
         if self.current_sample is None:
             return
@@ -435,7 +532,16 @@ class MainWindow(QMainWindow):
         percentage_parent = (event_count / parent_count * 100.0) if parent_count else 0.0
         percentage_total = (event_count / total_count * 100.0) if total_count else 0.0
 
-        gate_name = f"Gate {len(self.gates) + 1}"
+        prompted_details = self.prompt_for_gate_details(
+            initial_name=f"Gate {len(self.gates) + 1}",
+            initial_color=DEFAULT_GATE_COLOR,
+            title="Apply rectangle gate",
+        )
+        if prompted_details is None:
+            self.statusBar().showMessage("Gate creation cancelled", 3000)
+            return
+
+        gate_name, gate_color = prompted_details
         gate = RectangleGate(
             name=gate_name,
             parent_name=self.current_population_name(),
@@ -451,6 +557,7 @@ class MainWindow(QMainWindow):
             percentage_parent=percentage_parent,
             percentage_total=percentage_total,
             full_mask=full_mask,
+            color_hex=gate_color,
         )
 
         self._store_and_select_new_gate(gate)
@@ -498,7 +605,16 @@ class MainWindow(QMainWindow):
         percentage_parent = (event_count / parent_count * 100.0) if parent_count else 0.0
         percentage_total = (event_count / total_count * 100.0) if total_count else 0.0
 
-        gate_name = f"Gate {len(self.gates) + 1}"
+        prompted_details = self.prompt_for_gate_details(
+            initial_name=f"Gate {len(self.gates) + 1}",
+            initial_color=DEFAULT_GATE_COLOR,
+            title="Apply polygon gate",
+        )
+        if prompted_details is None:
+            self.statusBar().showMessage("Gate creation cancelled", 3000)
+            return
+
+        gate_name, gate_color = prompted_details
         gate = PolygonGate(
             name=gate_name,
             parent_name=self.current_population_name(),
@@ -511,6 +627,7 @@ class MainWindow(QMainWindow):
             percentage_parent=percentage_parent,
             percentage_total=percentage_total,
             full_mask=full_mask,
+            color_hex=gate_color,
         )
 
         self._store_and_select_new_gate(gate)
@@ -558,7 +675,16 @@ class MainWindow(QMainWindow):
         percentage_parent = (event_count / parent_count * 100.0) if parent_count else 0.0
         percentage_total = (event_count / total_count * 100.0) if total_count else 0.0
 
-        gate_name = f"Gate {len(self.gates) + 1}"
+        prompted_details = self.prompt_for_gate_details(
+            initial_name=f"Gate {len(self.gates) + 1}",
+            initial_color=DEFAULT_GATE_COLOR,
+            title="Apply range gate",
+        )
+        if prompted_details is None:
+            self.statusBar().showMessage("Gate creation cancelled", 3000)
+            return
+
+        gate_name, gate_color = prompted_details
         gate = RangeGate(
             name=gate_name,
             parent_name=self.current_population_name(),
@@ -570,6 +696,7 @@ class MainWindow(QMainWindow):
             percentage_parent=percentage_parent,
             percentage_total=percentage_total,
             full_mask=full_mask,
+            color_hex=gate_color,
         )
 
         self._store_and_select_new_gate(gate)
@@ -582,8 +709,99 @@ class MainWindow(QMainWindow):
     def _store_and_select_new_gate(self, gate: RectangleGate | RangeGate | PolygonGate) -> None:
         self.gates.append(gate)
         self.sample_panel.add_gate(gate.label, select=False)
+        self.sample_panel.update_gate(len(self.gates) - 1, gate.label, gate.color_hex)
         new_row = len(self.gates)
         self.sample_panel.select_gate_row(new_row)
+
+    def on_rename_active_gate(self, raw_name: str) -> None:
+        if self.active_gate is None:
+            return
+
+        new_name = raw_name.strip()
+        if not new_name:
+            self.inspector_panel.set_gate_editor_state(
+                self.active_gate.name,
+                self.active_gate.color_hex,
+            )
+            self.statusBar().showMessage("Gate name cannot be empty", 3000)
+            return
+
+        if new_name == self.active_gate.name:
+            return
+
+        self.active_gate.name = new_name
+        gate_index = self.gates.index(self.active_gate)
+        self.sample_panel.update_gate(gate_index, self.active_gate.label, self.active_gate.color_hex)
+        self.inspector_panel.set_active_gate(self.active_gate.name)
+        self.inspector_panel.set_gate_editor_state(
+            self.active_gate.name,
+            self.active_gate.color_hex,
+        )
+        self.redraw_current_plot(show_status=False)
+        self.statusBar().showMessage(f"Renamed gate to {self.active_gate.name}", 4000)
+
+    def on_recolor_active_gate(self) -> None:
+        if self.active_gate is None:
+            self.statusBar().showMessage("Select a gate before changing its color", 3000)
+            return
+
+        color = QColorDialog.getColor(
+            QColor(self.active_gate.color_hex),
+            self,
+            f"Select color for {self.active_gate.name}",
+        )
+        if not color.isValid():
+            return
+
+        self.active_gate.color_hex = color.name().lower()
+        gate_index = self.gates.index(self.active_gate)
+        self.sample_panel.update_gate(gate_index, self.active_gate.label, self.active_gate.color_hex)
+        self.inspector_panel.set_gate_editor_state(
+            self.active_gate.name,
+            self.active_gate.color_hex,
+        )
+        self.statusBar().showMessage(
+            f"Changed {self.active_gate.name} color to {self.active_gate.color_hex}",
+            4000,
+        )
+        self.redraw_current_plot(show_status=False)
+
+    def on_rename_gate_from_context(self, gate_index: int) -> None:
+        gate = self.gates[gate_index]
+        gate_name, accepted = QInputDialog.getText(
+            self,
+            "Rename gate",
+            "Gate name:",
+            text=gate.name,
+        )
+        if not accepted:
+            return
+
+        self.active_gate = gate
+        self.on_rename_active_gate(gate_name)
+
+    def on_recolor_gate_from_context(self, gate_index: int) -> None:
+        self.active_gate = self.gates[gate_index]
+        self.on_recolor_active_gate()
+
+    def on_delete_gate_from_context(self, gate_index: int) -> None:
+        gate = self.gates[gate_index]
+        answer = QMessageBox.question(
+            self,
+            "Delete gate",
+            f"Delete {gate.name}?",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+
+        del self.gates[gate_index]
+        self.sample_panel.gate_list.takeItem(gate_index + 1)
+        self.active_gate = None
+        self.sample_panel.select_gate_row(0)
+        self.inspector_panel.set_active_gate("All events")
+        self.inspector_panel.set_gate_editor_state(None, None)
+        self.redraw_current_plot(show_status=False)
+        self.statusBar().showMessage(f"Deleted {gate.name}", 4000)
 
     def on_clear_draft_gate(self) -> None:
         self.plot_panel.clear_all_rois()

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 import pyqtgraph as pg
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QVBoxLayout, QWidget
 
 
@@ -84,9 +85,24 @@ class CytometryPlotWidget(QWidget):
         title: str | None = None,
         max_points: int | None = None,
         selected_mask: np.ndarray | None = None,
+        point_color: str = "#466ebe",
     ) -> tuple[int, int]:
         x_plot, y_plot, display_indices, total_count = self._downsample(x, y, max_points)
         displayed_count = len(display_indices)
+        base_color = QColor(point_color)
+        base_brush = (
+            base_color.red(),
+            base_color.green(),
+            base_color.blue(),
+            110,
+        )
+        highlight_pen = pg.mkPen(base_color.darker(140), width=1)
+        highlight_brush = (
+            base_color.red(),
+            base_color.green(),
+            base_color.blue(),
+            190,
+        )
 
         self.plot_widget.clear()
         self._rect_roi = None
@@ -109,7 +125,7 @@ class CytometryPlotWidget(QWidget):
             y=y_plot,
             size=4,
             pen=None,
-            brush=(70, 110, 190, 90),
+            brush=base_brush,
         )
         self.plot_widget.addItem(self._base_scatter_item)
 
@@ -123,8 +139,8 @@ class CytometryPlotWidget(QWidget):
                     x=x_sel,
                     y=y_sel,
                     size=5,
-                    pen=pg.mkPen((180, 40, 40, 220), width=1),
-                    brush=(255, 140, 0, 180),
+                    pen=highlight_pen,
+                    brush=highlight_brush,
                 )
                 self.plot_widget.addItem(self._highlight_scatter_item)
 

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QSignalBlocker, Qt, Signal
-from PySide6.QtGui import QDoubleValidator
+from PySide6.QtGui import QColor, QDoubleValidator
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -10,6 +10,8 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QListWidget,
+    QListWidgetItem,
+    QMenu,
     QPushButton,
     QSpinBox,
     QVBoxLayout,
@@ -20,7 +22,11 @@ from PySide6.QtWidgets import (
 class SamplePanel(QWidget):
     """Left panel: loaded samples and gate list."""
 
+    sample_selection_changed = Signal(int)
     gate_selection_changed = Signal(int)
+    rename_gate_context_requested = Signal(int)
+    recolor_gate_context_requested = Signal(int)
+    delete_gate_context_requested = Signal(int)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -30,6 +36,7 @@ class SamplePanel(QWidget):
 
         self.gate_list = QListWidget()
         self.gate_list.setAlternatingRowColors(True)
+        self.gate_list.setContextMenuPolicy(Qt.CustomContextMenu)
 
         self.add_sample_button = QPushButton("Load sample")
         self.remove_sample_button = QPushButton("Remove selected")
@@ -54,6 +61,7 @@ class SamplePanel(QWidget):
 
         self.sample_list.currentRowChanged.connect(self._on_sample_selection_changed)
         self.gate_list.currentRowChanged.connect(self.gate_selection_changed.emit)
+        self.gate_list.customContextMenuRequested.connect(self._on_gate_context_menu_requested)
 
         self.reset_gates()
 
@@ -66,10 +74,28 @@ class SamplePanel(QWidget):
         self.gate_list.addItem("All events")
         self.gate_list.setCurrentRow(0)
 
+    def reset_samples(self) -> None:
+        self.sample_list.clear()
+        self.remove_sample_button.setEnabled(False)
+
     def add_gate(self, label: str, *, select: bool = True) -> None:
         self.gate_list.addItem(label)
         if select:
             self.gate_list.setCurrentRow(self.gate_list.count() - 1)
+
+    def update_gate(self, gate_index: int, label: str, color_hex: str) -> None:
+        item = self.gate_item(gate_index)
+        if item is None:
+            return
+
+        item.setText(label)
+        item.setForeground(QColor(color_hex))
+
+    def gate_item(self, gate_index: int) -> QListWidgetItem | None:
+        row = gate_index + 1
+        if row < 1 or row >= self.gate_list.count():
+            return None
+        return self.gate_list.item(row)
 
     def select_gate_row(self, row: int) -> None:
         if 0 <= row < self.gate_list.count():
@@ -77,6 +103,33 @@ class SamplePanel(QWidget):
 
     def _on_sample_selection_changed(self, row: int) -> None:
         self.remove_sample_button.setEnabled(row >= 0)
+        self.sample_selection_changed.emit(row)
+
+    def _on_gate_context_menu_requested(self, pos) -> None:
+        item = self.gate_list.itemAt(pos)
+        if item is None:
+            return
+
+        row = self.gate_list.row(item)
+        if row <= 0:
+            return
+
+        menu = QMenu(self)
+        rename_action = menu.addAction("Rename gate")
+        recolor_action = menu.addAction("Change color")
+        delete_action = menu.addAction("Delete gate")
+        chosen_action = menu.exec(self.gate_list.mapToGlobal(pos))
+        if chosen_action is None:
+            return
+
+        self.gate_list.setCurrentRow(row)
+        gate_index = row - 1
+        if chosen_action is rename_action:
+            self.rename_gate_context_requested.emit(gate_index)
+        elif chosen_action is recolor_action:
+            self.recolor_gate_context_requested.emit(gate_index)
+        elif chosen_action is delete_action:
+            self.delete_gate_context_requested.emit(gate_index)
 
 
 class InspectorPanel(QWidget):
@@ -91,6 +144,8 @@ class InspectorPanel(QWidget):
     apply_gate_requested = Signal()
     clear_gate_requested = Signal()
     export_gate_requested = Signal()
+    rename_gate_requested = Signal(str)
+    recolor_gate_requested = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -186,9 +241,16 @@ class InspectorPanel(QWidget):
         self.apply_gate_button = QPushButton("Apply gate")
         self.clear_gate_button = QPushButton("Clear draft gate")
         self.export_gate_button = QPushButton("Export active gate to CSV")
+        self.gate_name_edit = QLineEdit()
+        self.gate_name_edit.setPlaceholderText("Select a gate")
+        self.gate_color_button = QPushButton("Gate color")
 
         gate_controls_box = QGroupBox("Gate controls")
         gate_layout = QVBoxLayout()
+        gate_form = QFormLayout()
+        gate_form.addRow("Gate name:", self.gate_name_edit)
+        gate_form.addRow("Gate color:", self.gate_color_button)
+        gate_layout.addLayout(gate_form)
         gate_layout.addWidget(self.create_gate_button)
         gate_layout.addWidget(self.apply_gate_button)
         gate_layout.addWidget(self.clear_gate_button)
@@ -227,8 +289,11 @@ class InspectorPanel(QWidget):
         self.apply_gate_button.clicked.connect(self.apply_gate_requested.emit)
         self.clear_gate_button.clicked.connect(self.clear_gate_requested.emit)
         self.export_gate_button.clicked.connect(self.export_gate_requested.emit)
+        self.gate_name_edit.editingFinished.connect(self._emit_rename_gate_requested)
+        self.gate_color_button.clicked.connect(self.recolor_gate_requested.emit)
 
         self.set_plot_mode("scatter")
+        self.set_gate_editor_state(None, None)
 
     def set_file_info(
         self,
@@ -245,6 +310,21 @@ class InspectorPanel(QWidget):
 
     def set_active_gate(self, gate_name: str) -> None:
         self.active_gate_label.setText(gate_name)
+
+    def set_gate_editor_state(self, gate_name: str | None, color_hex: str | None) -> None:
+        is_enabled = gate_name is not None and color_hex is not None
+        with QSignalBlocker(self.gate_name_edit):
+            self.gate_name_edit.setText(gate_name or "")
+        self.gate_name_edit.setEnabled(is_enabled)
+        self.gate_color_button.setEnabled(is_enabled)
+
+        if color_hex is None:
+            self.gate_color_button.setStyleSheet("")
+            return
+
+        self.gate_color_button.setStyleSheet(
+            f"background-color: {color_hex}; color: white; font-weight: 600;"
+        )
 
     def set_channels(
         self,
@@ -355,6 +435,9 @@ class InspectorPanel(QWidget):
             self.limit_points_checkbox.isChecked(),
             self.max_points_spin.value(),
         )
+
+    def _emit_rename_gate_requested(self) -> None:
+        self.rename_gate_requested.emit(self.gate_name_edit.text())
 
     @staticmethod
     def _parse_optional_float(text: str) -> float | None:

@@ -4,6 +4,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+DEFAULT_GATE_COLOR = "#d43c3c"
+
 
 @dataclass(slots=True)
 class RectangleGate:
@@ -21,6 +23,7 @@ class RectangleGate:
     percentage_parent: float
     percentage_total: float
     full_mask: np.ndarray
+    color_hex: str = DEFAULT_GATE_COLOR
 
     @property
     def label(self) -> str:
@@ -42,6 +45,7 @@ class RangeGate:
     percentage_parent: float
     percentage_total: float
     full_mask: np.ndarray
+    color_hex: str = DEFAULT_GATE_COLOR
 
     @property
     def label(self) -> str:
@@ -64,6 +68,7 @@ class PolygonGate:
     percentage_parent: float
     percentage_total: float
     full_mask: np.ndarray
+    color_hex: str = DEFAULT_GATE_COLOR
 
     @property
     def label(self) -> str:
