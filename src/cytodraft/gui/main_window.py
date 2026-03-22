@@ -1,13 +1,14 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import QFileDialog, QMainWindow, QMessageBox, QSplitter
 
+from cytodraft.core.fcs_reader import choose_default_axes
 from cytodraft.gui.panels import InspectorPanel, SamplePanel
 from cytodraft.gui.plot_widget import CytometryPlotWidget
+from cytodraft.models.sample import SampleData
+from cytodraft.services.sample_service import SampleService
 
 
 class MainWindow(QMainWindow):
@@ -16,6 +17,9 @@ class MainWindow(QMainWindow):
 
         self.setWindowTitle("CytoDraft")
         self.resize(1400, 850)
+
+        self.sample_service = SampleService()
+        self.current_sample: SampleData | None = None
 
         self.sample_panel = SamplePanel()
         self.plot_panel = CytometryPlotWidget()
@@ -64,6 +68,7 @@ class MainWindow(QMainWindow):
         self.exit_action.triggered.connect(self.close)
         self.about_action.triggered.connect(self.show_about_dialog)
         self.sample_panel.add_sample_button.clicked.connect(self.open_fcs_dialog)
+        self.inspector_panel.axes_changed.connect(self.on_axes_changed)
 
     def open_fcs_dialog(self) -> None:
         file_path, _ = QFileDialog.getOpenFileName(
@@ -77,15 +82,91 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("Open file cancelled", 3000)
             return
 
-        file_name = Path(file_path).name
-        self.sample_panel.add_sample(file_name)
+        self.load_sample(file_path)
+
+    def load_sample(self, file_path: str) -> None:
+        try:
+            sample = self.sample_service.load_sample(file_path)
+        except Exception as exc:
+            QMessageBox.critical(
+                self,
+                "Failed to load FCS",
+                f"Could not read file:\n{file_path}\n\nError:\n{exc}",
+            )
+            self.statusBar().showMessage("Failed to load FCS file", 5000)
+            return
+
+        self.current_sample = sample
+        self.sample_panel.add_sample(sample.file_name)
+        self._update_inspector(sample)
+        self._configure_axis_selectors(sample)
+        self._plot_default_view(sample)
+
+        self.statusBar().showMessage(
+            f"Loaded {sample.file_name} | {sample.event_count} events | {sample.channel_count} channels",
+            6000,
+        )
+
+    def _update_inspector(self, sample: SampleData) -> None:
         self.inspector_panel.set_file_info(
-            file_name=file_name,
-            events="pending",
-            channels="pending",
+            file_name=sample.file_name,
+            events=str(sample.event_count),
+            channels=str(sample.channel_count),
             active_gate="None",
         )
-        self.statusBar().showMessage(f"Selected file: {file_name}", 5000)
+
+    def _configure_axis_selectors(self, sample: SampleData) -> None:
+        channel_names = [channel.display_name for channel in sample.channels]
+
+        try:
+            x_idx, y_idx = choose_default_axes(sample)
+        except ValueError:
+            self.inspector_panel.clear_channels()
+            return
+
+        self.inspector_panel.set_channels(channel_names, x_index=x_idx, y_index=y_idx)
+
+    def _plot_default_view(self, sample: SampleData) -> None:
+        try:
+            x_idx, y_idx = choose_default_axes(sample)
+        except ValueError:
+            self.plot_panel.show_empty_message("Sample has fewer than two channels")
+            return
+
+        self.plot_axes(x_idx, y_idx)
+
+    def plot_axes(self, x_idx: int, y_idx: int) -> None:
+        if self.current_sample is None:
+            return
+
+        sample = self.current_sample
+
+        if x_idx < 0 or y_idx < 0:
+            return
+        if x_idx >= sample.channel_count or y_idx >= sample.channel_count:
+            return
+
+        x = sample.events[:, x_idx]
+        y = sample.events[:, y_idx]
+
+        x_label = sample.channel_label(x_idx)
+        y_label = sample.channel_label(y_idx)
+
+        self.plot_panel.plot_scatter(
+            x,
+            y,
+            x_label,
+            y_label,
+            title=f"{sample.file_name} | {y_label} vs {x_label}",
+        )
+
+        self.statusBar().showMessage(
+            f"Viewing {sample.file_name} | X: {x_label} | Y: {y_label}",
+            4000,
+        )
+
+    def on_axes_changed(self, x_idx: int, y_idx: int) -> None:
+        self.plot_axes(x_idx, y_idx)
 
     def show_about_dialog(self) -> None:
         QMessageBox.about(
@@ -94,6 +175,6 @@ class MainWindow(QMainWindow):
             (
                 "CytoDraft\n\n"
                 "Open-source desktop application for cytometry data analysis.\n"
-                "This is the initial GUI scaffold."
+                "Current stage: local FCS loading + metadata + interactive axis selection."
             ),
         )

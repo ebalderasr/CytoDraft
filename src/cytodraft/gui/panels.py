@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QSignalBlocker, Qt, Signal
 from PySide6.QtWidgets import (
+    QComboBox,
     QFormLayout,
     QGroupBox,
     QLabel,
@@ -49,13 +50,16 @@ class SamplePanel(QWidget):
 
     def add_sample(self, name: str) -> None:
         self.sample_list.addItem(name)
+        self.sample_list.setCurrentRow(self.sample_list.count() - 1)
 
     def _on_sample_selection_changed(self, row: int) -> None:
         self.remove_sample_button.setEnabled(row >= 0)
 
 
 class InspectorPanel(QWidget):
-    """Right panel: basic metadata / future controls."""
+    """Right panel: metadata and plot controls."""
+
+    axes_changed = Signal(int, int)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -74,23 +78,38 @@ class InspectorPanel(QWidget):
             label.setTextInteractionFlags(Qt.TextSelectableByMouse)
 
         info_box = QGroupBox("Inspector")
-        form = QFormLayout()
-        form.addRow("File:", self.file_label)
-        form.addRow("Events:", self.events_label)
-        form.addRow("Channels:", self.channels_label)
-        form.addRow("Active gate:", self.active_gate_label)
-        info_box.setLayout(form)
+        info_form = QFormLayout()
+        info_form.addRow("File:", self.file_label)
+        info_form.addRow("Events:", self.events_label)
+        info_form.addRow("Channels:", self.channels_label)
+        info_form.addRow("Active gate:", self.active_gate_label)
+        info_box.setLayout(info_form)
 
-        placeholder_box = QGroupBox("Plot controls")
-        placeholder_layout = QVBoxLayout()
-        placeholder_layout.addWidget(QLabel("Axis selectors, transforms, and gate tools will appear here."))
-        placeholder_box.setLayout(placeholder_layout)
+        self.x_axis_combo = QComboBox()
+        self.y_axis_combo = QComboBox()
+        self.x_axis_combo.setEnabled(False)
+        self.y_axis_combo.setEnabled(False)
+
+        plot_controls_box = QGroupBox("Plot controls")
+        plot_form = QFormLayout()
+        plot_form.addRow("X axis:", self.x_axis_combo)
+        plot_form.addRow("Y axis:", self.y_axis_combo)
+        plot_controls_box.setLayout(plot_form)
+
+        hint_box = QGroupBox("Notes")
+        hint_layout = QVBoxLayout()
+        hint_layout.addWidget(QLabel("Use the axis selectors to inspect different channel pairs."))
+        hint_box.setLayout(hint_layout)
 
         layout = QVBoxLayout()
         layout.addWidget(info_box)
-        layout.addWidget(placeholder_box)
+        layout.addWidget(plot_controls_box)
+        layout.addWidget(hint_box)
         layout.addStretch(1)
         self.setLayout(layout)
+
+        self.x_axis_combo.currentIndexChanged.connect(self._emit_axes_changed)
+        self.y_axis_combo.currentIndexChanged.connect(self._emit_axes_changed)
 
     def set_file_info(
         self,
@@ -104,3 +123,48 @@ class InspectorPanel(QWidget):
         self.events_label.setText(events)
         self.channels_label.setText(channels)
         self.active_gate_label.setText(active_gate)
+
+    def set_channels(
+        self,
+        channel_names: list[str],
+        *,
+        x_index: int | None = None,
+        y_index: int | None = None,
+    ) -> None:
+        with QSignalBlocker(self.x_axis_combo), QSignalBlocker(self.y_axis_combo):
+            self.x_axis_combo.clear()
+            self.y_axis_combo.clear()
+
+            self.x_axis_combo.addItems(channel_names)
+            self.y_axis_combo.addItems(channel_names)
+
+            has_channels = len(channel_names) >= 2
+            self.x_axis_combo.setEnabled(has_channels)
+            self.y_axis_combo.setEnabled(has_channels)
+
+            if not has_channels:
+                return
+
+            if x_index is None:
+                x_index = 0
+            if y_index is None:
+                y_index = 1 if len(channel_names) > 1 else 0
+
+            self.x_axis_combo.setCurrentIndex(x_index)
+            self.y_axis_combo.setCurrentIndex(y_index)
+
+    def clear_channels(self) -> None:
+        with QSignalBlocker(self.x_axis_combo), QSignalBlocker(self.y_axis_combo):
+            self.x_axis_combo.clear()
+            self.y_axis_combo.clear()
+            self.x_axis_combo.setEnabled(False)
+            self.y_axis_combo.setEnabled(False)
+
+    def _emit_axes_changed(self) -> None:
+        x_index = self.x_axis_combo.currentIndex()
+        y_index = self.y_axis_combo.currentIndex()
+
+        if x_index < 0 or y_index < 0:
+            return
+
+        self.axes_changed.emit(x_index, y_index)
