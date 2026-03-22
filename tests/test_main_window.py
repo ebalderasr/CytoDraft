@@ -120,7 +120,7 @@ def test_rename_active_gate_updates_model_and_list() -> None:
     window.on_rename_active_gate("Lymphocytes")
 
     assert gate.name == "Lymphocytes"
-    assert window.sample_panel.gate_list.item(1).text().startswith("Lymphocytes |")
+    assert window.sample_panel.gate_list.item(1).text().startswith("Lymphocytes <- All events |")
     assert window.inspector_panel.active_gate_label.text() == "Lymphocytes"
     assert window.inspector_panel.gate_name_edit.text() == "Lymphocytes"
 
@@ -386,6 +386,93 @@ def test_statistics_tab_calculates_population_metrics() -> None:
     assert window.inspector_panel.statistics_table.item(0, 1).text() == "2"
     assert window.inspector_panel.statistics_table.item(1, 0).text() == "Mean"
     assert window.inspector_panel.statistics_table.item(1, 1).text() == "1.0000"
+
+
+def test_population_context_labels_show_origin_and_direct_children() -> None:
+    get_app()
+    window = MainWindow()
+    sample = make_sample("demo.fcs")
+    parent_gate = RangeGate(
+        name="Gate 1",
+        parent_name="All events",
+        channel_index=0,
+        channel_label="FSC-A",
+        x_min=0.0,
+        x_max=3.0,
+        event_count=2,
+        percentage_parent=50.0,
+        percentage_total=50.0,
+        full_mask=np.array([True, True, False, False]),
+    )
+    child_gate = RangeGate(
+        name="Gate 2",
+        parent_name="Gate 1",
+        channel_index=0,
+        channel_label="FSC-A",
+        x_min=0.0,
+        x_max=1.0,
+        event_count=1,
+        percentage_parent=50.0,
+        percentage_total=25.0,
+        full_mask=np.array([True, False, False, False]),
+    )
+
+    window.current_sample = sample
+    window.gates = [parent_gate, child_gate]
+    window.sample_panel.reset_gates()
+    for gate in window.gates:
+        window.sample_panel.add_gate(window._gate_list_label(gate), select=False)
+
+    window.on_gate_selection_changed(1)
+    assert window.sample_panel.population_origin_label.text() == "Origin: All events"
+    assert window.sample_panel.population_children_label.text() == "Subpopulations: Gate 2"
+
+    window.on_gate_selection_changed(2)
+    assert window.sample_panel.population_origin_label.text() == "Origin: Gate 1"
+    assert window.sample_panel.population_children_label.text() == "Subpopulations: —"
+
+
+def test_scatter_can_overlay_direct_subpopulations() -> None:
+    get_app()
+    window = MainWindow()
+    sample = make_sample("demo.fcs")
+    parent_gate = RangeGate(
+        name="Gate 1",
+        parent_name="All events",
+        channel_index=0,
+        channel_label="FSC-A",
+        x_min=0.0,
+        x_max=5.0,
+        event_count=3,
+        percentage_parent=75.0,
+        percentage_total=75.0,
+        full_mask=np.array([True, True, True, False]),
+        color_hex="#ff0000",
+    )
+    child_gate = RangeGate(
+        name="Gate 2",
+        parent_name="Gate 1",
+        channel_index=0,
+        channel_label="FSC-A",
+        x_min=0.0,
+        x_max=3.0,
+        event_count=2,
+        percentage_parent=66.67,
+        percentage_total=50.0,
+        full_mask=np.array([True, True, False, False]),
+        color_hex="#00aa55",
+    )
+
+    window.current_sample = sample
+    window.gates = [parent_gate, child_gate]
+    window.active_gate = parent_gate
+    window._update_inspector(sample)
+    window._configure_axis_selectors(sample)
+    window.inspector_panel.show_subpopulations_checkbox.setChecked(True)
+
+    window.redraw_current_plot(show_status=False)
+
+    assert len(window.plot_panel._subpopulation_scatter_items) == 1
 
 
 def test_export_statistics_uses_csv_export(monkeypatch) -> None:

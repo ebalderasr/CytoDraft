@@ -162,6 +162,7 @@ class MainWindow(QMainWindow):
         self.sample_panel.reset_samples()
         self.sample_panel.add_sample(sample.file_name)
         self.sample_panel.reset_gates()
+        self._update_population_context_labels()
 
         self._update_inspector(sample)
         self._configure_axis_selectors(sample)
@@ -248,6 +249,46 @@ class MainWindow(QMainWindow):
                 return gate.full_mask
         return None
 
+    def _children_of_population(
+        self,
+        population_name: str,
+    ) -> list[RectangleGate | RangeGate | PolygonGate | CircleGate]:
+        return [gate for gate in self.gates if gate.parent_name == population_name]
+
+    def _gate_depth(self, gate: RectangleGate | RangeGate | PolygonGate | CircleGate) -> int:
+        depth = 0
+        current_parent = gate.parent_name
+        while current_parent != "All events":
+            parent_gate = next((candidate for candidate in self.gates if candidate.name == current_parent), None)
+            if parent_gate is None:
+                break
+            depth += 1
+            current_parent = parent_gate.parent_name
+        return depth
+
+    def _gate_list_label(self, gate: RectangleGate | RangeGate | PolygonGate | CircleGate) -> str:
+        depth = self._gate_depth(gate)
+        indent = "  " * depth
+        return f"{indent}{gate.name} <- {gate.parent_name} | {gate.event_count:,} events ({gate.percentage_parent:.2f}% parent, {gate.percentage_total:.2f}% total)"
+
+    def _update_population_context_labels(self) -> None:
+        current_name = self.current_population_name()
+        if self.active_gate is None:
+            origin_name = "Root population"
+        else:
+            origin_name = self.active_gate.parent_name
+
+        child_names = [gate.name for gate in self._children_of_population(current_name)]
+        self.sample_panel.set_population_context(origin_name, child_names)
+
+    def _refresh_gate_list_labels(self) -> None:
+        for gate_index, gate in enumerate(self.gates):
+            self.sample_panel.update_gate(
+                gate_index,
+                self._gate_list_label(gate),
+                gate.color_hex,
+            )
+
     def current_population_mask(self) -> np.ndarray | None:
         if self.current_sample is None:
             return None
@@ -274,6 +315,7 @@ class MainWindow(QMainWindow):
 
         self.sample_panel.reset_samples()
         self.sample_panel.reset_gates()
+        self._update_population_context_labels()
         self.inspector_panel.set_file_info()
         self.inspector_panel.set_displayed_points(None, None)
         self.inspector_panel.set_gate_editor_state(None, None)
@@ -354,6 +396,24 @@ class MainWindow(QMainWindow):
 
         limit_enabled, max_points = self.inspector_panel.sampling_settings()
         display_limit = max_points if limit_enabled else None
+        subpopulation_overlays: list[tuple[np.ndarray, np.ndarray, str]] = []
+
+        if self.inspector_panel.show_subpopulations_enabled():
+            current_name = self.current_population_name()
+            for child_gate in self._children_of_population(current_name):
+                child_local_mask = child_gate.full_mask[population_mask]
+                if len(child_local_mask) != len(finite_mask):
+                    continue
+                child_display_mask = child_local_mask[finite_mask]
+                if not np.any(child_display_mask):
+                    continue
+                subpopulation_overlays.append(
+                    (
+                        x[child_display_mask],
+                        y[child_display_mask],
+                        child_gate.color_hex,
+                    )
+                )
 
         displayed_count, total_count = self.plot_panel.plot_scatter(
             x,
@@ -364,6 +424,7 @@ class MainWindow(QMainWindow):
             max_points=display_limit,
             selected_mask=None,
             point_color=self.current_population_color(),
+            subpopulation_overlays=subpopulation_overlays,
         )
 
         x_min, x_max, y_min, y_max = self.inspector_panel.current_view_limits()
@@ -480,6 +541,7 @@ class MainWindow(QMainWindow):
             )
 
         self._refresh_statistics_population_options()
+        self._update_population_context_labels()
 
         self.redraw_current_plot(show_status=False)
 
@@ -872,8 +934,8 @@ class MainWindow(QMainWindow):
         self.gates.append(gate)
         self._clear_statistics_results()
         self._refresh_statistics_population_options()
-        self.sample_panel.add_gate(gate.label, select=False)
-        self.sample_panel.update_gate(len(self.gates) - 1, gate.label, gate.color_hex)
+        self.sample_panel.add_gate(self._gate_list_label(gate), select=False)
+        self._refresh_gate_list_labels()
         new_row = len(self.gates)
         self.sample_panel.select_gate_row(new_row)
 
@@ -893,9 +955,12 @@ class MainWindow(QMainWindow):
         if new_name == self.active_gate.name:
             return
 
+        old_name = self.active_gate.name
         self.active_gate.name = new_name
-        gate_index = self.gates.index(self.active_gate)
-        self.sample_panel.update_gate(gate_index, self.active_gate.label, self.active_gate.color_hex)
+        for gate in self.gates:
+            if gate.parent_name == old_name:
+                gate.parent_name = new_name
+        self._refresh_gate_list_labels()
         self.inspector_panel.set_active_gate(self.active_gate.name)
         self.inspector_panel.set_gate_editor_state(
             self.active_gate.name,
@@ -903,6 +968,7 @@ class MainWindow(QMainWindow):
         )
         self._clear_statistics_results()
         self._refresh_statistics_population_options()
+        self._update_population_context_labels()
         self.redraw_current_plot(show_status=False)
         self.statusBar().showMessage(f"Renamed gate to {self.active_gate.name}", 4000)
 
@@ -921,7 +987,11 @@ class MainWindow(QMainWindow):
 
         self.active_gate.color_hex = color.name().lower()
         gate_index = self.gates.index(self.active_gate)
-        self.sample_panel.update_gate(gate_index, self.active_gate.label, self.active_gate.color_hex)
+        self.sample_panel.update_gate(
+            gate_index,
+            self._gate_list_label(self.active_gate),
+            self.active_gate.color_hex,
+        )
         self.inspector_panel.set_gate_editor_state(
             self.active_gate.name,
             self.active_gate.color_hex,
@@ -960,16 +1030,34 @@ class MainWindow(QMainWindow):
         if answer != QMessageBox.StandardButton.Yes:
             return
 
-        del self.gates[gate_index]
-        self.sample_panel.gate_list.takeItem(gate_index + 1)
+        names_to_delete = {gate.name}
+        changed = True
+        while changed:
+            changed = False
+            for candidate in self.gates:
+                if candidate.parent_name in names_to_delete and candidate.name not in names_to_delete:
+                    names_to_delete.add(candidate.name)
+                    changed = True
+
+        self.gates = [candidate for candidate in self.gates if candidate.name not in names_to_delete]
+        self.sample_panel.reset_gates()
+        for remaining_gate in self.gates:
+            self.sample_panel.add_gate(self._gate_list_label(remaining_gate), select=False)
         self.active_gate = None
         self._clear_statistics_results()
         self.sample_panel.select_gate_row(0)
         self.inspector_panel.set_active_gate("All events")
         self.inspector_panel.set_gate_editor_state(None, None)
         self._refresh_statistics_population_options()
+        self._update_population_context_labels()
         self.redraw_current_plot(show_status=False)
-        self.statusBar().showMessage(f"Deleted {gate.name}", 4000)
+        if len(names_to_delete) == 1:
+            self.statusBar().showMessage(f"Deleted {gate.name}", 4000)
+        else:
+            self.statusBar().showMessage(
+                f"Deleted {gate.name} and {len(names_to_delete) - 1} descendant gates",
+                4000,
+            )
 
     def on_clear_draft_gate(self) -> None:
         self.plot_panel.clear_all_rois()

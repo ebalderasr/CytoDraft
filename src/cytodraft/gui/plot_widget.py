@@ -41,6 +41,7 @@ class CytometryPlotWidget(QWidget):
 
         self._base_scatter_item: pg.ScatterPlotItem | None = None
         self._highlight_scatter_item: pg.ScatterPlotItem | None = None
+        self._subpopulation_scatter_items: list[pg.ScatterPlotItem] = []
         self._hist_item: pg.PlotDataItem | None = None
         self._rect_roi: pg.RectROI | None = None
         self._poly_roi: pg.PolyLineROI | None = None
@@ -53,6 +54,7 @@ class CytometryPlotWidget(QWidget):
         self.plot_widget.clear()
         self._base_scatter_item = None
         self._highlight_scatter_item = None
+        self._subpopulation_scatter_items = []
         self._hist_item = None
         self._rect_roi = None
         self._poly_roi = None
@@ -69,6 +71,7 @@ class CytometryPlotWidget(QWidget):
         self.plot_widget.clear()
         self._base_scatter_item = None
         self._highlight_scatter_item = None
+        self._subpopulation_scatter_items = []
         self._hist_item = None
         self._rect_roi = None
         self._poly_roi = None
@@ -105,6 +108,7 @@ class CytometryPlotWidget(QWidget):
         max_points: int | None = None,
         selected_mask: np.ndarray | None = None,
         point_color: str = "#466ebe",
+        subpopulation_overlays: list[tuple[np.ndarray, np.ndarray, str]] | None = None,
     ) -> tuple[int, int]:
         x_plot, y_plot, display_indices, total_count = self._downsample(x, y, max_points)
         displayed_count = len(display_indices)
@@ -130,6 +134,7 @@ class CytometryPlotWidget(QWidget):
         self._range_region = None
         self._base_scatter_item = None
         self._highlight_scatter_item = None
+        self._subpopulation_scatter_items = []
         self._hist_item = None
 
         self.plot_widget.setLabel("bottom", x_label)
@@ -148,6 +153,24 @@ class CytometryPlotWidget(QWidget):
             brush=base_brush,
         )
         self.plot_widget.addItem(self._base_scatter_item)
+
+        if subpopulation_overlays:
+            for x_overlay, y_overlay, color_hex in subpopulation_overlays:
+                overlay_color = QColor(color_hex)
+                overlay_item = pg.ScatterPlotItem(
+                    x=x_overlay,
+                    y=y_overlay,
+                    size=7,
+                    pen=pg.mkPen(overlay_color.darker(135), width=1.5),
+                    brush=(
+                        overlay_color.red(),
+                        overlay_color.green(),
+                        overlay_color.blue(),
+                        165,
+                    ),
+                )
+                self.plot_widget.addItem(overlay_item)
+                self._subpopulation_scatter_items.append(overlay_item)
 
         if selected_mask is not None and len(selected_mask) == total_count:
             selected_display_mask = selected_mask[display_indices]
@@ -182,6 +205,7 @@ class CytometryPlotWidget(QWidget):
         self._range_region = None
         self._base_scatter_item = None
         self._highlight_scatter_item = None
+        self._subpopulation_scatter_items = []
         self._hist_item = None
 
         total_count = len(values)

@@ -68,6 +68,12 @@ class SamplePanel(QWidget):
         gate_box = QGroupBox("Gates / populations")
         gate_layout = QVBoxLayout()
         gate_layout.addWidget(self.gate_list)
+        self.population_origin_label = QLabel("Origin: —")
+        self.population_origin_label.setWordWrap(True)
+        self.population_children_label = QLabel("Subpopulations: —")
+        self.population_children_label.setWordWrap(True)
+        gate_layout.addWidget(self.population_origin_label)
+        gate_layout.addWidget(self.population_children_label)
         gate_box.setLayout(gate_layout)
 
         layout = QVBoxLayout()
@@ -91,6 +97,7 @@ class SamplePanel(QWidget):
         self.gate_list.clear()
         self.gate_list.addItem("All events")
         self.gate_list.setCurrentRow(0)
+        self.set_population_context("Root population", [])
 
     def reset_samples(self) -> None:
         self.sample_list.clear()
@@ -118,6 +125,13 @@ class SamplePanel(QWidget):
     def select_gate_row(self, row: int) -> None:
         if 0 <= row < self.gate_list.count():
             self.gate_list.setCurrentRow(row)
+
+    def set_population_context(self, origin_name: str, child_names: list[str]) -> None:
+        self.population_origin_label.setText(f"Origin: {origin_name}")
+        if child_names:
+            self.population_children_label.setText(f"Subpopulations: {', '.join(child_names)}")
+        else:
+            self.population_children_label.setText("Subpopulations: —")
 
     def _on_sample_selection_changed(self, row: int) -> None:
         self.remove_sample_button.setEnabled(row >= 0)
@@ -235,6 +249,8 @@ class InspectorPanel(QWidget):
 
         self.limit_points_checkbox = QCheckBox("Limit displayed points")
         self.limit_points_checkbox.setChecked(True)
+        self.show_subpopulations_checkbox = QCheckBox("Show direct subpopulations")
+        self.show_subpopulations_checkbox.setChecked(False)
 
         self.max_points_spin = QSpinBox()
         self.max_points_spin.setRange(1000, 200000)
@@ -289,6 +305,7 @@ class InspectorPanel(QWidget):
         visualization_form.addRow("Plot mode:", self.plot_mode_combo)
         visualization_form.addRow("X axis:", self.x_axis_combo)
         visualization_form.addRow("Y axis:", self.y_axis_combo)
+        visualization_form.addRow("", self.show_subpopulations_checkbox)
         visualization_box.setLayout(visualization_form)
 
         plot_adjustments_box = QGroupBox("Ajustes de grafica")
@@ -461,6 +478,7 @@ class InspectorPanel(QWidget):
         self.y_scale_combo.currentIndexChanged.connect(self._emit_view_settings_changed)
         self.limit_points_checkbox.toggled.connect(self._emit_sampling_changed)
         self.max_points_spin.valueChanged.connect(self._emit_sampling_changed)
+        self.show_subpopulations_checkbox.toggled.connect(self._emit_view_settings_changed)
 
         self.x_min_edit.editingFinished.connect(self._emit_view_settings_changed)
         self.x_max_edit.editingFinished.connect(self._emit_view_settings_changed)
@@ -682,6 +700,9 @@ class InspectorPanel(QWidget):
 
     def sampling_settings(self) -> tuple[bool, int]:
         return self.limit_points_checkbox.isChecked(), self.max_points_spin.value()
+
+    def show_subpopulations_enabled(self) -> bool:
+        return self.show_subpopulations_checkbox.isChecked()
 
     def set_displayed_points(self, displayed: int | None, total: int | None) -> None:
         if displayed is None or total is None:
