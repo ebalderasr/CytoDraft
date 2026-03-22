@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QSignalBlocker, Qt, Signal
+from PySide6.QtGui import QDoubleValidator
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QFormLayout,
     QGroupBox,
     QLabel,
+    QLineEdit,
     QListWidget,
     QPushButton,
     QSpinBox,
@@ -82,6 +84,8 @@ class InspectorPanel(QWidget):
 
     axes_changed = Signal(int, int)
     sampling_changed = Signal(bool, int)
+    view_settings_changed = Signal()
+    auto_range_requested = Signal()
     create_rectangle_gate_requested = Signal()
     apply_gate_requested = Signal()
     clear_gate_requested = Signal()
@@ -119,6 +123,16 @@ class InspectorPanel(QWidget):
         self.x_axis_combo.setEnabled(False)
         self.y_axis_combo.setEnabled(False)
 
+        self.x_scale_combo = QComboBox()
+        self.x_scale_combo.addItem("Linear", "linear")
+        self.x_scale_combo.addItem("Log10", "log10")
+        self.x_scale_combo.addItem("Asinh", "asinh")
+
+        self.y_scale_combo = QComboBox()
+        self.y_scale_combo.addItem("Linear", "linear")
+        self.y_scale_combo.addItem("Log10", "log10")
+        self.y_scale_combo.addItem("Asinh", "asinh")
+
         self.limit_points_checkbox = QCheckBox("Limit displayed points")
         self.limit_points_checkbox.setChecked(True)
 
@@ -127,10 +141,32 @@ class InspectorPanel(QWidget):
         self.max_points_spin.setSingleStep(1000)
         self.max_points_spin.setValue(30000)
 
+        validator = QDoubleValidator(self)
+
+        self.x_min_edit = QLineEdit()
+        self.x_max_edit = QLineEdit()
+        self.y_min_edit = QLineEdit()
+        self.y_max_edit = QLineEdit()
+
+        for edit in (self.x_min_edit, self.x_max_edit, self.y_min_edit, self.y_max_edit):
+            edit.setValidator(validator)
+            edit.setPlaceholderText("auto")
+
+        self.apply_view_button = QPushButton("Apply view")
+        self.auto_range_button = QPushButton("Auto range")
+
         plot_controls_box = QGroupBox("Plot controls")
         plot_form = QFormLayout()
         plot_form.addRow("X axis:", self.x_axis_combo)
         plot_form.addRow("Y axis:", self.y_axis_combo)
+        plot_form.addRow("X scale:", self.x_scale_combo)
+        plot_form.addRow("Y scale:", self.y_scale_combo)
+        plot_form.addRow("X min:", self.x_min_edit)
+        plot_form.addRow("X max:", self.x_max_edit)
+        plot_form.addRow("Y min:", self.y_min_edit)
+        plot_form.addRow("Y max:", self.y_max_edit)
+        plot_form.addRow("", self.apply_view_button)
+        plot_form.addRow("", self.auto_range_button)
         plot_form.addRow("", self.limit_points_checkbox)
         plot_form.addRow("Max points:", self.max_points_spin)
         plot_controls_box.setLayout(plot_form)
@@ -152,7 +188,7 @@ class InspectorPanel(QWidget):
         hint_layout = QVBoxLayout()
         hint_layout.addWidget(
             QLabel(
-                "If you select a gate from the left panel, the plot focuses on that population and new gates are applied within it."
+                "Scales and limits apply to the displayed coordinate system. New gates are computed in the same displayed space."
             )
         )
         hint_box.setLayout(hint_layout)
@@ -167,8 +203,13 @@ class InspectorPanel(QWidget):
 
         self.x_axis_combo.currentIndexChanged.connect(self._emit_axes_changed)
         self.y_axis_combo.currentIndexChanged.connect(self._emit_axes_changed)
+        self.x_scale_combo.currentIndexChanged.connect(self.view_settings_changed.emit)
+        self.y_scale_combo.currentIndexChanged.connect(self.view_settings_changed.emit)
         self.limit_points_checkbox.toggled.connect(self._emit_sampling_changed)
         self.max_points_spin.valueChanged.connect(self._emit_sampling_changed)
+
+        self.apply_view_button.clicked.connect(self.view_settings_changed.emit)
+        self.auto_range_button.clicked.connect(self.auto_range_requested.emit)
 
         self.create_rect_gate_button.clicked.connect(self.create_rectangle_gate_requested.emit)
         self.apply_gate_button.clicked.connect(self.apply_gate_requested.emit)
@@ -230,6 +271,25 @@ class InspectorPanel(QWidget):
     def current_axes(self) -> tuple[int, int]:
         return self.x_axis_combo.currentIndex(), self.y_axis_combo.currentIndex()
 
+    def current_scales(self) -> tuple[str, str]:
+        x_mode = str(self.x_scale_combo.currentData())
+        y_mode = str(self.y_scale_combo.currentData())
+        return x_mode, y_mode
+
+    def current_view_limits(self) -> tuple[float | None, float | None, float | None, float | None]:
+        return (
+            self._parse_optional_float(self.x_min_edit.text()),
+            self._parse_optional_float(self.x_max_edit.text()),
+            self._parse_optional_float(self.y_min_edit.text()),
+            self._parse_optional_float(self.y_max_edit.text()),
+        )
+
+    def clear_view_limits(self) -> None:
+        self.x_min_edit.clear()
+        self.x_max_edit.clear()
+        self.y_min_edit.clear()
+        self.y_max_edit.clear()
+
     def sampling_settings(self) -> tuple[bool, int]:
         return self.limit_points_checkbox.isChecked(), self.max_points_spin.value()
 
@@ -253,3 +313,10 @@ class InspectorPanel(QWidget):
             self.limit_points_checkbox.isChecked(),
             self.max_points_spin.value(),
         )
+
+    @staticmethod
+    def _parse_optional_float(text: str) -> float | None:
+        stripped = text.strip()
+        if not stripped:
+            return None
+        return float(stripped)

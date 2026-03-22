@@ -119,6 +119,23 @@ class CytometryPlotWidget(QWidget):
         self.plot_widget.enableAutoRange()
         return displayed_count, total_count
 
+    def set_manual_ranges(
+        self,
+        *,
+        x_min: float | None,
+        x_max: float | None,
+        y_min: float | None,
+        y_max: float | None,
+    ) -> None:
+        if x_min is not None and x_max is not None and x_max > x_min:
+            self.plot_widget.setXRange(x_min, x_max, padding=0.0)
+
+        if y_min is not None and y_max is not None and y_max > y_min:
+            self.plot_widget.setYRange(y_min, y_max, padding=0.0)
+
+    def auto_range(self) -> None:
+        self.plot_widget.autoRange()
+
     def create_rectangle_roi(self) -> bool:
         view_range = self.plot_widget.viewRange()
         if not view_range or len(view_range) != 2:
