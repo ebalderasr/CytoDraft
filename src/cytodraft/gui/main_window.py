@@ -5,6 +5,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import QFileDialog, QMainWindow, QMessageBox, QSplitter
 
+from cytodraft.core.export import export_masked_events_to_csv
 from cytodraft.core.fcs_reader import choose_default_axes
 from cytodraft.core.gating import rectangle_mask
 from cytodraft.gui.panels import InspectorPanel, SamplePanel
@@ -58,10 +59,14 @@ class MainWindow(QMainWindow):
         self.open_action = QAction("Open FCS...", self)
         self.open_action.setShortcut("Ctrl+O")
 
+        self.export_gate_action = QAction("Export active gate to CSV...", self)
+        self.export_gate_action.setShortcut("Ctrl+E")
+
         self.exit_action = QAction("Exit", self)
         self.exit_action.setShortcut("Ctrl+Q")
 
         file_menu.addAction(self.open_action)
+        file_menu.addAction(self.export_gate_action)
         file_menu.addSeparator()
         file_menu.addAction(self.exit_action)
 
@@ -71,6 +76,7 @@ class MainWindow(QMainWindow):
 
     def _connect_signals(self) -> None:
         self.open_action.triggered.connect(self.open_fcs_dialog)
+        self.export_gate_action.triggered.connect(self.on_export_active_gate)
         self.exit_action.triggered.connect(self.close)
         self.about_action.triggered.connect(self.show_about_dialog)
         self.sample_panel.add_sample_button.clicked.connect(self.open_fcs_dialog)
@@ -79,6 +85,7 @@ class MainWindow(QMainWindow):
         self.inspector_panel.create_rectangle_gate_requested.connect(self.on_create_rectangle_gate)
         self.inspector_panel.apply_gate_requested.connect(self.on_apply_gate)
         self.inspector_panel.clear_gate_requested.connect(self.on_clear_draft_gate)
+        self.inspector_panel.export_gate_requested.connect(self.on_export_active_gate)
 
     def open_fcs_dialog(self) -> None:
         file_path, _ = QFileDialog.getOpenFileName(
@@ -293,6 +300,51 @@ class MainWindow(QMainWindow):
         if self.active_gate is None:
             self.inspector_panel.set_active_gate("None")
         self.statusBar().showMessage("Draft rectangle gate cleared", 4000)
+
+    def on_export_active_gate(self) -> None:
+        if self.current_sample is None:
+            self.statusBar().showMessage("No sample loaded", 4000)
+            return
+
+        if self.active_gate is None or self.active_gate_mask is None:
+            self.statusBar().showMessage("Apply a gate before exporting", 4000)
+            return
+
+        default_name = (
+            f"{self.current_sample.file_path.stem}_"
+            f"{self.active_gate.name.lower().replace(' ', '_')}.csv"
+        )
+
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export active gate to CSV",
+            default_name,
+            "CSV files (*.csv);;All files (*)",
+        )
+
+        if not file_path:
+            self.statusBar().showMessage("Export cancelled", 3000)
+            return
+
+        try:
+            output_path = export_masked_events_to_csv(
+                self.current_sample,
+                self.active_gate_mask,
+                file_path,
+            )
+        except Exception as exc:
+            QMessageBox.critical(
+                self,
+                "Export failed",
+                f"Could not export active gate.\n\nError:\n{exc}",
+            )
+            self.statusBar().showMessage("Failed to export gate", 5000)
+            return
+
+        self.statusBar().showMessage(
+            f"Exported {self.active_gate.name} to {output_path}",
+            6000,
+        )
 
     def show_about_dialog(self) -> None:
         QMessageBox.about(

@@ -73,6 +73,7 @@ class InspectorPanel(QWidget):
     create_rectangle_gate_requested = Signal()
     apply_gate_requested = Signal()
     clear_gate_requested = Signal()
+    export_gate_requested = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -125,12 +126,14 @@ class InspectorPanel(QWidget):
         self.create_rect_gate_button = QPushButton("Create rectangle gate")
         self.apply_gate_button = QPushButton("Apply gate")
         self.clear_gate_button = QPushButton("Clear draft gate")
+        self.export_gate_button = QPushButton("Export active gate to CSV")
 
         gate_controls_box = QGroupBox("Gate controls")
         gate_layout = QVBoxLayout()
         gate_layout.addWidget(self.create_rect_gate_button)
         gate_layout.addWidget(self.apply_gate_button)
         gate_layout.addWidget(self.clear_gate_button)
+        gate_layout.addWidget(self.export_gate_button)
         gate_controls_box.setLayout(gate_layout)
 
         hint_box = QGroupBox("Notes")
@@ -158,6 +161,7 @@ class InspectorPanel(QWidget):
         self.create_rect_gate_button.clicked.connect(self.create_rectangle_gate_requested.emit)
         self.apply_gate_button.clicked.connect(self.apply_gate_requested.emit)
         self.clear_gate_button.clicked.connect(self.clear_gate_requested.emit)
+        self.export_gate_button.clicked.connect(self.export_gate_requested.emit)
 
     def set_file_info(
         self,
