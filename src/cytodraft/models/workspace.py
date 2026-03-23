@@ -21,6 +21,21 @@ class WorkspaceGroup:
 
 
 @dataclass(slots=True)
+class WorkspaceStatisticColumn:
+    statistic_key: str
+    statistic_label: str
+    population_name: str
+    channel_name: str
+    group_name: str | None = None
+
+    @property
+    def header(self) -> str:
+        group_label = self.group_name or "All samples"
+        channel_label = self.channel_name or "—"
+        return f"{group_label} | {self.population_name} | {channel_label} | {self.statistic_label}"
+
+
+@dataclass(slots=True)
 class CompensationSampleMetadata:
     control_type: str = "single_stain"
     fluorochrome: str = ""
@@ -55,6 +70,7 @@ class WorkspaceSample:
     group_name: str = DEFAULT_GROUP_NAME
     gates: list[GateModel] = field(default_factory=list)
     active_gate_name: str | None = None
+    display_name_override: str | None = None
     compensation: CompensationSampleMetadata = field(default_factory=CompensationSampleMetadata)
     compensation_positive: CompensationPopulationSelection = field(default_factory=CompensationPopulationSelection)
     compensation_negative: CompensationPopulationSelection = field(default_factory=CompensationPopulationSelection)
@@ -62,11 +78,18 @@ class WorkspaceSample:
     keywords: dict[str, str] = field(default_factory=dict)
 
     @property
+    def sample_name(self) -> str:
+        override = (self.display_name_override or "").strip()
+        if override:
+            return override
+        return self.sample.file_name
+
+    @property
     def display_name(self) -> str:
         if self.group_name == COMPENSATION_GROUP_NAME:
             summary = self.compensation.summary
-            return f"{self.sample.file_name} | {summary}"
-        return self.sample.file_name
+            return f"{self.sample_name} | {summary}"
+        return self.sample_name
 
 
 @dataclass(slots=True)
@@ -76,6 +99,7 @@ class WorkspaceState:
     active_sample_index: int | None = None
     universal_negative_sample_index: int | None = None
     keyword_columns: list[str] = field(default_factory=list)
+    statistic_columns: list[WorkspaceStatisticColumn] = field(default_factory=list)
 
     def add_keyword_column(self, name: str) -> None:
         if name not in self.keyword_columns:
@@ -86,6 +110,16 @@ class WorkspaceState:
             self.keyword_columns.remove(name)
             for ws in self.samples:
                 ws.keywords.pop(name, None)
+
+    def add_statistic_column(self, column: WorkspaceStatisticColumn) -> None:
+        self.statistic_columns.append(column)
+
+    def remove_statistic_column(self, index: int) -> None:
+        if 0 <= index < len(self.statistic_columns):
+            self.statistic_columns.pop(index)
+
+    def clear_statistic_columns(self) -> None:
+        self.statistic_columns.clear()
 
     def __post_init__(self) -> None:
         self.ensure_group(COMPENSATION_GROUP_NAME).color_hex = COMPENSATION_GROUP_COLOR
@@ -161,6 +195,27 @@ class WorkspaceState:
                 sample.group_name = normalized_new
 
         return target_group
+
+    def delete_group(
+        self,
+        group_name: str,
+        *,
+        fallback_group_name: str = DEFAULT_GROUP_NAME,
+    ) -> None:
+        normalized_group = group_name.strip() or DEFAULT_GROUP_NAME
+        if normalized_group == COMPENSATION_GROUP_NAME:
+            raise ValueError("The Compensation group cannot be deleted.")
+
+        if normalized_group not in self.groups:
+            raise ValueError(f"Unknown group '{normalized_group}'.")
+
+        normalized_fallback = fallback_group_name.strip() or DEFAULT_GROUP_NAME
+        self.ensure_group(normalized_fallback)
+        for sample in self.samples:
+            if sample.group_name == normalized_group:
+                sample.group_name = normalized_fallback
+
+        self.groups.pop(normalized_group, None)
 
     def samples_in_group(self, group_name: str | None) -> list[tuple[int, WorkspaceSample]]:
         if group_name is None:

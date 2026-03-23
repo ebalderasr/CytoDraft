@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QFormLayout,
     QGroupBox,
+    QHBoxLayout,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -20,6 +21,7 @@ from PySide6.QtWidgets import (
     QTableWidget,
     QTableWidgetItem,
     QTabWidget,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -27,6 +29,22 @@ from PySide6.QtWidgets import (
 from cytodraft.core.statistics import STATISTIC_DEFINITIONS
 
 ITEM_ROLE_ID = Qt.UserRole
+
+
+def _make_manager_button(
+    text: str,
+    *,
+    tooltip: str,
+    variant: str,
+    width: int,
+) -> QToolButton:
+    button = QToolButton()
+    button.setText(text)
+    button.setToolTip(tooltip)
+    button.setProperty("variant", variant)
+    button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+    button.setFixedSize(width, 26)
+    return button
 
 
 class SamplePanel(QWidget):
@@ -37,7 +55,11 @@ class SamplePanel(QWidget):
     rename_group_requested = Signal(str)
     recolor_group_requested = Signal(str)
     annotate_group_requested = Signal(str)
+    create_group_requested = Signal()
+    delete_group_requested = Signal(str)
     sample_selection_changed = Signal(int)
+    edit_sample_requested = Signal(int)
+    add_sample_keyword_requested = Signal(int)
     edit_compensation_sample_requested = Signal(int)
     assign_sample_group_requested = Signal(int, str)
     assign_custom_sample_group_requested = Signal(int)
@@ -46,6 +68,7 @@ class SamplePanel(QWidget):
     apply_active_gate_to_all_requested = Signal(int)
     apply_all_gates_to_all_requested = Signal(int)
     gate_selection_changed = Signal(int)
+    apply_gate_requested = Signal()
     rename_gate_context_requested = Signal(int)
     recolor_gate_context_requested = Signal(int)
     delete_gate_context_requested = Signal(int)
@@ -75,15 +98,84 @@ class SamplePanel(QWidget):
         self.gate_list.setSpacing(2)
         self.gate_list.setMinimumHeight(70)
 
-        self.add_sample_button = QPushButton("Open FCS")
-        self.add_sample_button.setProperty("variant", "primary")
-        self.remove_sample_button = QPushButton("Remove sample")
-        self.remove_sample_button.setProperty("variant", "danger")
+        self.add_group_button = _make_manager_button(
+            "+",
+            tooltip="Create group",
+            variant="primary",
+            width=26,
+        )
+
+        self.remove_group_button = _make_manager_button(
+            "-",
+            tooltip="Delete selected group",
+            variant="danger",
+            width=26,
+        )
+
+        self.edit_group_button = _make_manager_button(
+            "Edit",
+            tooltip="Rename selected group",
+            variant="subtle",
+            width=36,
+        )
+
+        self.add_sample_button = _make_manager_button(
+            "+",
+            tooltip="Add samples to the selected group",
+            variant="primary",
+            width=26,
+        )
+
+        self.remove_sample_button = _make_manager_button(
+            "-",
+            tooltip="Remove the selected sample",
+            variant="danger",
+            width=26,
+        )
         self.remove_sample_button.setEnabled(False)
+
+        self.edit_sample_button = _make_manager_button(
+            "Edit",
+            tooltip="Rename sample or add keyword",
+            variant="subtle",
+            width=36,
+        )
+        self.edit_sample_button.setEnabled(False)
+
+        self.add_gate_button = _make_manager_button(
+            "+",
+            tooltip="Apply current draft gate",
+            variant="primary",
+            width=26,
+        )
+
+        self.remove_gate_button = _make_manager_button(
+            "-",
+            tooltip="Delete selected gate",
+            variant="danger",
+            width=26,
+        )
+        self.remove_gate_button.setEnabled(False)
+
+        self.edit_gate_button = _make_manager_button(
+            "Edit",
+            tooltip="Rename gate or change color",
+            variant="subtle",
+            width=36,
+        )
+        self.edit_gate_button.setEnabled(False)
 
         group_box = QGroupBox("Groups")
         group_layout = QVBoxLayout()
         group_layout.addWidget(self.group_list)
+        group_actions = QHBoxLayout()
+        group_actions.setContentsMargins(0, 0, 0, 0)
+        group_actions.setSpacing(6)
+        group_actions.addWidget(self.add_group_button)
+        group_actions.addWidget(self.remove_group_button)
+        group_actions.addWidget(self.edit_group_button)
+        group_actions.addStretch(1)
+        group_layout.addLayout(group_actions)
         self.group_notes_label = QLabel("Notes: —")
         self.group_notes_label.setWordWrap(True)
         group_layout.addWidget(self.group_notes_label)
@@ -95,8 +187,14 @@ class SamplePanel(QWidget):
         self.sample_details_label = QLabel("Sample details: —")
         self.sample_details_label.setWordWrap(True)
         sample_layout.addWidget(self.sample_details_label)
-        sample_layout.addWidget(self.add_sample_button)
-        sample_layout.addWidget(self.remove_sample_button)
+        sample_actions = QHBoxLayout()
+        sample_actions.setContentsMargins(0, 0, 0, 0)
+        sample_actions.setSpacing(6)
+        sample_actions.addWidget(self.add_sample_button)
+        sample_actions.addWidget(self.remove_sample_button)
+        sample_actions.addWidget(self.edit_sample_button)
+        sample_actions.addStretch(1)
+        sample_layout.addLayout(sample_actions)
         sample_box.setLayout(sample_layout)
 
         gate_box = QGroupBox("Gates / populations")
@@ -108,6 +206,14 @@ class SamplePanel(QWidget):
         self.population_children_label.setWordWrap(True)
         gate_layout.addWidget(self.population_origin_label)
         gate_layout.addWidget(self.population_children_label)
+        gate_actions = QHBoxLayout()
+        gate_actions.setContentsMargins(0, 0, 0, 0)
+        gate_actions.setSpacing(6)
+        gate_actions.addWidget(self.add_gate_button)
+        gate_actions.addWidget(self.remove_gate_button)
+        gate_actions.addWidget(self.edit_gate_button)
+        gate_actions.addStretch(1)
+        gate_layout.addLayout(gate_actions)
         gate_box.setLayout(gate_layout)
 
         layout = QVBoxLayout()
@@ -122,8 +228,15 @@ class SamplePanel(QWidget):
         self.group_list.customContextMenuRequested.connect(self._on_group_context_menu_requested)
         self.sample_list.currentRowChanged.connect(self._on_sample_selection_changed)
         self.sample_list.customContextMenuRequested.connect(self._on_sample_context_menu_requested)
-        self.gate_list.currentRowChanged.connect(self.gate_selection_changed.emit)
+        self.gate_list.currentRowChanged.connect(self._on_gate_selection_changed)
         self.gate_list.customContextMenuRequested.connect(self._on_gate_context_menu_requested)
+        self.add_group_button.clicked.connect(self.create_group_requested.emit)
+        self.remove_group_button.clicked.connect(self._on_delete_group_button_clicked)
+        self.edit_group_button.clicked.connect(self._on_edit_group_button_clicked)
+        self.edit_sample_button.clicked.connect(self._on_edit_sample_button_clicked)
+        self.add_gate_button.clicked.connect(self.apply_gate_requested.emit)
+        self.remove_gate_button.clicked.connect(self._on_delete_gate_button_clicked)
+        self.edit_gate_button.clicked.connect(self._on_edit_gate_button_clicked)
 
         self.reset_groups()
         self.reset_gates()
@@ -236,15 +349,68 @@ class SamplePanel(QWidget):
     def _on_sample_selection_changed(self, row: int) -> None:
         sample_index = self.current_sample_workspace_index()
         self.remove_sample_button.setEnabled(sample_index is not None)
+        self.edit_sample_button.setEnabled(sample_index is not None)
         self.sample_selection_changed.emit(-1 if sample_index is None else sample_index)
+
+    def _on_gate_selection_changed(self, row: int) -> None:
+        gate_index = row - 1
+        has_gate = gate_index >= 0
+        self.remove_gate_button.setEnabled(has_gate)
+        self.edit_gate_button.setEnabled(has_gate)
+        self.gate_selection_changed.emit(row)
 
     def _on_group_selection_changed(self, current: QListWidgetItem | None, previous: QListWidgetItem | None) -> None:
         del previous
+        has_group = current is not None and current.data(ITEM_ROLE_ID) is not None
+        self.remove_group_button.setEnabled(has_group)
+        self.edit_group_button.setEnabled(has_group)
         if current is None:
             self.group_notes_label.setText("Notes: —")
             self.group_selection_changed.emit(None)
             return
         self.group_selection_changed.emit(current.data(ITEM_ROLE_ID))
+
+    def _on_delete_group_button_clicked(self) -> None:
+        group_name = self.current_group_name()
+        if group_name is not None:
+            self.delete_group_requested.emit(group_name)
+
+    def _on_edit_group_button_clicked(self) -> None:
+        group_name = self.current_group_name()
+        if group_name is not None:
+            self.rename_group_requested.emit(group_name)
+
+    def _on_edit_sample_button_clicked(self) -> None:
+        sample_index = self.current_sample_workspace_index()
+        if sample_index is None:
+            return
+        menu = QMenu(self)
+        rename_action = menu.addAction("Rename sample")
+        keyword_action = menu.addAction("Add keyword...")
+        chosen = menu.exec(self.edit_sample_button.mapToGlobal(self.edit_sample_button.rect().bottomLeft()))
+        if chosen is rename_action:
+            self.edit_sample_requested.emit(sample_index)
+        elif chosen is keyword_action:
+            self.add_sample_keyword_requested.emit(sample_index)
+
+    def _on_delete_gate_button_clicked(self) -> None:
+        row = self.gate_list.currentRow()
+        if row > 0:
+            self.delete_gate_context_requested.emit(row - 1)
+
+    def _on_edit_gate_button_clicked(self) -> None:
+        row = self.gate_list.currentRow()
+        if row <= 0:
+            return
+        gate_index = row - 1
+        menu = QMenu(self)
+        rename_action = menu.addAction("Rename gate")
+        color_action = menu.addAction("Change color")
+        chosen = menu.exec(self.edit_gate_button.mapToGlobal(self.edit_gate_button.rect().bottomLeft()))
+        if chosen is rename_action:
+            self.rename_gate_context_requested.emit(gate_index)
+        elif chosen is color_action:
+            self.recolor_gate_context_requested.emit(gate_index)
 
     def _on_group_context_menu_requested(self, pos) -> None:
         item = self.group_list.itemAt(pos)

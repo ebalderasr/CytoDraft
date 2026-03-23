@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QComboBox,
     QDialog,
     QDialogButtonBox,
+    QFormLayout,
     QGroupBox,
     QHBoxLayout,
     QListWidget,
@@ -14,6 +16,7 @@ from PySide6.QtWidgets import (
 
 from cytodraft.core.statistics import STATISTIC_DEFINITIONS
 from cytodraft.models.workspace import COMPENSATION_GROUP_NAME, WorkspaceState
+from cytodraft.services.statistics_service import StatisticsService
 
 _DEFAULT_CHECKED_METRICS = {"event_count", "percent_parent", "mean", "median"}
 
@@ -150,6 +153,84 @@ class BatchExportDialog(QDialog):
 
     def selected_channels(self) -> list[str]:
         return self._channels_panel.checked_items()
+
+    def selected_metric_keys(self) -> list[str]:
+        return [
+            self._metric_label_to_key[label]
+            for label in self._metrics_panel.checked_items()
+            if label in self._metric_label_to_key
+        ]
+
+
+class StatisticsColumnDialog(QDialog):
+    """Select one group/population/channel and one or more metrics to add as table columns."""
+
+    def __init__(self, workspace: WorkspaceState, statistics_service: StatisticsService, parent=None) -> None:
+        super().__init__(parent)
+        self.workspace = workspace
+        self.statistics_service = statistics_service
+        self.setWindowTitle("Add Statistics Columns")
+        self.resize(560, 460)
+
+        self._group_combo = QComboBox()
+        self._group_combo.addItem("All samples", None)
+        for group_name in self.statistics_service.available_groups(workspace):
+            self._group_combo.addItem(group_name, group_name)
+
+        self._population_combo = QComboBox()
+        self._channel_combo = QComboBox()
+        self._metrics_panel = _CheckList(
+            "Statistics",
+            [label for _, label in STATISTIC_DEFINITIONS],
+            checked={label for key, label in STATISTIC_DEFINITIONS if key in _DEFAULT_CHECKED_METRICS},
+        )
+        self._metric_label_to_key = {label: key for key, label in STATISTIC_DEFINITIONS}
+
+        form_box = QGroupBox("Selection")
+        form = QFormLayout()
+        form.addRow("Group:", self._group_combo)
+        form.addRow("Population:", self._population_combo)
+        form.addRow("Channel:", self._channel_combo)
+        form_box.setLayout(form)
+
+        button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
+        self._add_button = button_box.addButton(
+            "Add columns", QDialogButtonBox.ButtonRole.AcceptRole
+        )
+        button_box.rejected.connect(self.reject)
+        button_box.accepted.connect(self.accept)
+
+        layout = QVBoxLayout()
+        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setSpacing(8)
+        layout.addWidget(form_box)
+        layout.addWidget(self._metrics_panel, stretch=1)
+        layout.addWidget(button_box)
+        self.setLayout(layout)
+
+        self._group_combo.currentIndexChanged.connect(self._refresh_options)
+        self._refresh_options()
+
+    def _refresh_options(self) -> None:
+        group_name = self.selected_group_name()
+        populations = self.statistics_service.available_populations(self.workspace, group_name)
+        channels = self.statistics_service.available_channels(self.workspace, group_name)
+
+        self._population_combo.clear()
+        self._population_combo.addItems(populations)
+
+        self._channel_combo.clear()
+        self._channel_combo.addItems(channels)
+        self._channel_combo.setEnabled(bool(channels))
+
+    def selected_group_name(self) -> str | None:
+        return self._group_combo.currentData()
+
+    def selected_population_name(self) -> str:
+        return self._population_combo.currentText()
+
+    def selected_channel_name(self) -> str:
+        return self._channel_combo.currentText()
 
     def selected_metric_keys(self) -> list[str]:
         return [

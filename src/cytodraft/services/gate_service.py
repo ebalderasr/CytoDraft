@@ -11,11 +11,56 @@ from cytodraft.core.gating import (
 from cytodraft.core.transforms import apply_scale
 from cytodraft.models.gate import CircleGate, PolygonGate, RangeGate, RectangleGate
 from cytodraft.models.sample import SampleData
+from cytodraft.models.workspace import WorkspaceSample, WorkspaceState
 
 GateModel = RectangleGate | RangeGate | PolygonGate | CircleGate
 
 
 class GateService:
+    def propagate_gates(
+        self,
+        workspace: WorkspaceState,
+        *,
+        source_sample_index: int,
+        gate_names: list[str],
+        target_group_name: str | None = None,
+    ) -> tuple[int, list[str], str]:
+        if source_sample_index < 0 or source_sample_index >= len(workspace.samples):
+            return 0, ["Invalid source sample."], "selected samples"
+
+        source_sample = workspace.samples[source_sample_index]
+        gates_to_apply = self.selected_gate_sequence(source_sample.gates, gate_names)
+        if not gates_to_apply:
+            return 0, ["The source sample has no matching gates to propagate."], "selected samples"
+
+        if target_group_name is None:
+            target_samples = [
+                candidate
+                for idx, candidate in enumerate(workspace.samples)
+                if idx != source_sample_index
+            ]
+            scope_label = "all samples"
+        else:
+            target_samples = [
+                candidate
+                for idx, candidate in enumerate(workspace.samples)
+                if idx != source_sample_index and candidate.group_name == target_group_name
+            ]
+            scope_label = f"group {target_group_name}"
+
+        if not target_samples:
+            return 0, [], scope_label
+
+        applied_count = 0
+        failures: list[str] = []
+        for target in target_samples:
+            try:
+                self.replace_gates_on_sample(target, gates_to_apply)
+                applied_count += 1
+            except Exception as exc:
+                failures.append(f"{target.sample.file_name}: {exc}")
+        return applied_count, failures, scope_label
+
     def clone_gate_to_sample(
         self,
         gate: GateModel,
@@ -156,6 +201,51 @@ class GateService:
         for gate in gates:
             cloned.append(self.clone_gate_to_sample(gate, sample, cloned))
         return cloned
+
+    def selected_gate_sequence(
+        self,
+        gates: list[GateModel],
+        root_names: list[str],
+    ) -> list[GateModel]:
+        selected_names: set[str] = set()
+        for root_name in root_names:
+            selected_names.update(self.gate_subtree_names(gates, root_name))
+        return [gate for gate in gates if gate.name in selected_names]
+
+    def replace_gates_on_sample(
+        self,
+        target_sample: WorkspaceSample,
+        source_gates: list[GateModel],
+    ) -> None:
+        for gate in source_gates:
+            self.delete_gate_subtree(target_sample.gates, gate.name)
+        cloned_gates = self.clone_gate_sequence_to_sample(source_gates, target_sample.sample)
+        target_sample.gates.extend(cloned_gates)
+        if target_sample.active_gate_name and all(
+            gate.name != target_sample.active_gate_name for gate in target_sample.gates
+        ):
+            target_sample.active_gate_name = None
+
+    def upsert_gate_on_sample(self, target_sample: WorkspaceSample, gate: GateModel) -> None:
+        self.delete_gate_subtree(target_sample.gates, gate.name)
+        cloned_gate = self.clone_gate_to_sample(gate, target_sample.sample, target_sample.gates)
+        target_sample.gates.append(cloned_gate)
+
+    @staticmethod
+    def gate_subtree_names(gates: list[GateModel], root_name: str) -> set[str]:
+        names_to_delete = {root_name}
+        changed = True
+        while changed:
+            changed = False
+            for candidate in gates:
+                if candidate.parent_name in names_to_delete and candidate.name not in names_to_delete:
+                    names_to_delete.add(candidate.name)
+                    changed = True
+        return names_to_delete
+
+    def delete_gate_subtree(self, gates: list[GateModel], root_name: str) -> None:
+        names_to_delete = self.gate_subtree_names(gates, root_name)
+        gates[:] = [candidate for candidate in gates if candidate.name not in names_to_delete]
 
     @staticmethod
     def _percentage(count: int, total: int) -> float:

@@ -60,6 +60,7 @@ from cytodraft.models.workspace import (
 )
 from cytodraft.services.gate_service import GateService
 from cytodraft.services.sample_service import SampleService
+from cytodraft.services.statistics_service import StatisticsService
 
 GateModel = RectangleGate | RangeGate | PolygonGate | CircleGate
 
@@ -74,6 +75,7 @@ class MainWindow(QMainWindow):
 
         self.sample_service = SampleService()
         self.gate_service = GateService()
+        self.statistics_service = StatisticsService()
         self.workspace = WorkspaceState()
         self.selected_group_name: str | None = None
         self.current_sample: SampleData | None = None
@@ -91,6 +93,7 @@ class MainWindow(QMainWindow):
 
         self._build_ui()
         self._connect_signals()
+        self._move_statistics_to_sample_manager()
         self._refresh_group_list()
         self.setAcceptDrops(True)
 
@@ -141,9 +144,9 @@ class MainWindow(QMainWindow):
         file_menu.addAction(self.exit_action)
 
         view_menu = menu_bar.addMenu("&View")
-        self.sample_table_action = QAction("Sample Table...", self)
+        self.sample_table_action = QAction("Sample Manager...", self)
         self.sample_table_action.setShortcut("Ctrl+T")
-        self.sample_table_action.setToolTip("Open spreadsheet view of all samples with gate statistics and keywords")
+        self.sample_table_action.setToolTip("Open sample manager for samples, groups, and statistics")
         view_menu.addAction(self.sample_table_action)
 
         help_menu = menu_bar.addMenu("&Help")
@@ -156,11 +159,13 @@ class MainWindow(QMainWindow):
         toolbar.setMovable(False)
         toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
 
-        toolbar.addAction(self.open_action)
-        toolbar.addSeparator()
-        toolbar.addAction(self.export_gate_action)
-        toolbar.addSeparator()
         toolbar.addAction(self.sample_table_action)
+
+    def _move_statistics_to_sample_manager(self) -> None:
+        for tab_index in range(self.inspector_panel.controls_tabs.count()):
+            if self.inspector_panel.controls_tabs.tabText(tab_index) == "Statistics":
+                self.inspector_panel.controls_tabs.removeTab(tab_index)
+                break
 
     def _connect_signals(self) -> None:
         self.open_action.triggered.connect(self.open_fcs_dialog)
@@ -170,12 +175,16 @@ class MainWindow(QMainWindow):
         self.sample_table_action.triggered.connect(self.open_sample_table)
         self.sample_panel.add_sample_button.clicked.connect(self.open_fcs_dialog)
         self.sample_panel.remove_sample_button.clicked.connect(self.remove_selected_sample)
+        self.sample_panel.create_group_requested.connect(self.on_create_group)
+        self.sample_panel.delete_group_requested.connect(self.on_delete_group)
         self.sample_panel.group_selection_changed.connect(self.on_group_selection_changed)
         self.sample_panel.add_sample_to_group_requested.connect(self.open_fcs_dialog_for_group)
         self.sample_panel.rename_group_requested.connect(self.on_rename_group)
         self.sample_panel.recolor_group_requested.connect(self.on_recolor_group)
         self.sample_panel.annotate_group_requested.connect(self.on_annotate_group)
         self.sample_panel.sample_selection_changed.connect(self.on_sample_selection_changed)
+        self.sample_panel.edit_sample_requested.connect(self.on_edit_sample)
+        self.sample_panel.add_sample_keyword_requested.connect(self.on_add_keyword_to_sample)
         self.sample_panel.edit_compensation_sample_requested.connect(self.on_edit_compensation_sample)
         self.sample_panel.assign_sample_group_requested.connect(self.on_assign_sample_group)
         self.sample_panel.assign_custom_sample_group_requested.connect(self.on_assign_custom_sample_group)
@@ -184,6 +193,7 @@ class MainWindow(QMainWindow):
         self.sample_panel.apply_active_gate_to_all_requested.connect(self.on_apply_active_gate_to_all_samples)
         self.sample_panel.apply_all_gates_to_all_requested.connect(self.on_apply_all_gates_to_all_samples)
         self.sample_panel.gate_selection_changed.connect(self.on_gate_selection_changed)
+        self.sample_panel.apply_gate_requested.connect(self.on_apply_gate)
         self.sample_panel.rename_gate_context_requested.connect(self.on_rename_gate_from_context)
         self.sample_panel.recolor_gate_context_requested.connect(self.on_recolor_gate_from_context)
         self.sample_panel.delete_gate_context_requested.connect(self.on_delete_gate_from_context)
@@ -214,7 +224,14 @@ class MainWindow(QMainWindow):
     def open_sample_table(self) -> None:
         """Open (or bring to front) the Sample Table window."""
         if self._sample_table_window is None or not self._sample_table_window.isVisible():
-            self._sample_table_window = SampleTableWindow(self.workspace, parent=self)
+            self._sample_table_window = SampleTableWindow(
+                self.workspace,
+                self.gate_service,
+                self.statistics_service,
+                on_workspace_changed=self._on_workspace_changed_from_sample_manager,
+                on_add_samples_requested=self.open_fcs_dialog_for_group,
+                parent=self,
+            )
         else:
             self._sample_table_window.refresh()
         self._sample_table_window.show()
@@ -225,6 +242,30 @@ class MainWindow(QMainWindow):
         """Refresh the Sample Table window if it is open."""
         if self._sample_table_window is not None and self._sample_table_window.isVisible():
             self._sample_table_window.refresh()
+
+    def _on_workspace_changed_from_sample_manager(self) -> None:
+        self._sync_from_workspace()
+        self._clear_statistics_results()
+        self._refresh_group_list()
+        self._refresh_sample_list(select_active=True)
+        self._refresh_compensation_setup()
+        if self.current_sample is None:
+            self.selected_group_name = None
+            self.gates = []
+            self.active_gate = None
+            self.sample_panel.reset_samples()
+            self.sample_panel.reset_gates()
+            self._update_population_context_labels()
+            self.inspector_panel.set_file_info()
+            self.inspector_panel.set_displayed_points(None, None)
+            self.inspector_panel.clear_channels()
+            self.inspector_panel.clear_statistics()
+            self.plot_panel.clear_all_rois()
+            self.plot_panel.show_placeholder_data()
+            self.gate_toolbar.set_drawing_active(False)
+            return
+        self._refresh_gate_panel()
+        self._show_active_sample()
 
     # ------------------------------------------------------------------
     # FCS file loading
@@ -689,6 +730,8 @@ class MainWindow(QMainWindow):
 
     def clear_loaded_sample(self) -> None:
         self.workspace = WorkspaceState()
+        if self._sample_table_window is not None:
+            self._sample_table_window.workspace = self.workspace
         self.selected_group_name = None
         self.current_sample = None
         self.gates = []
@@ -839,6 +882,48 @@ class MainWindow(QMainWindow):
         self._refresh_sample_list(select_active=True)
         self.statusBar().showMessage(f"Renamed group to {normalized}", 4000)
 
+    def on_create_group(self) -> None:
+        group_name, accepted = QInputDialog.getText(
+            self,
+            "Create group",
+            "Group name:",
+        )
+        if not accepted:
+            return
+        normalized = group_name.strip()
+        if not normalized:
+            QMessageBox.warning(self, "Create group", "Group name cannot be empty.")
+            return
+        self.workspace.ensure_group(normalized)
+        self._refresh_group_list()
+        self.sample_panel.select_group(normalized)
+        self.statusBar().showMessage(f"Created group {normalized}", 4000)
+
+    def on_delete_group(self, group_name: str) -> None:
+        if group_name in {DEFAULT_GROUP_NAME, COMPENSATION_GROUP_NAME}:
+            QMessageBox.information(
+                self,
+                "Delete group",
+                f'The "{group_name}" group is reserved and cannot be deleted.',
+            )
+            return
+
+        answer = QMessageBox.question(
+            self,
+            "Delete group",
+            f'Delete the "{group_name}" group?\nSamples in this group will be moved to "{DEFAULT_GROUP_NAME}".',
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+
+        self.workspace.delete_group(group_name, fallback_group_name=DEFAULT_GROUP_NAME)
+        if self.selected_group_name == group_name:
+            self.selected_group_name = DEFAULT_GROUP_NAME
+        self._refresh_group_list()
+        self._refresh_sample_list(select_active=True)
+        self._refresh_sample_table()
+        self.statusBar().showMessage(f"Deleted group {group_name}", 4000)
+
     def on_recolor_group(self, group_name: str) -> None:
         group = self.workspace.groups.get(group_name)
         if group is None:
@@ -884,6 +969,59 @@ class MainWindow(QMainWindow):
                 5000,
             )
             return
+
+    def on_edit_sample(self, sample_index: int) -> None:
+        if sample_index < 0 or sample_index >= len(self.workspace.samples):
+            return
+
+        workspace_sample = self.workspace.samples[sample_index]
+        current_name = workspace_sample.sample_name
+        new_name, accepted = QInputDialog.getText(
+            self,
+            "Rename sample",
+            "Sample name:",
+            text=current_name,
+        )
+        if not accepted:
+            return
+        normalized = new_name.strip()
+        workspace_sample.display_name_override = normalized or None
+        self._refresh_sample_list(select_active=True)
+        self._refresh_sample_details()
+        self._refresh_sample_table()
+        self.statusBar().showMessage(f"Renamed sample to {workspace_sample.sample_name}", 4000)
+
+    def on_add_keyword_to_sample(self, sample_index: int) -> None:
+        if sample_index < 0 or sample_index >= len(self.workspace.samples):
+            return
+
+        keyword_name, accepted = QInputDialog.getText(
+            self,
+            "Add keyword to sample",
+            "Keyword name:",
+        )
+        if not accepted:
+            return
+        normalized_name = keyword_name.strip()
+        if not normalized_name:
+            QMessageBox.warning(self, "Add keyword", "Keyword name cannot be empty.")
+            return
+
+        keyword_value, accepted = QInputDialog.getText(
+            self,
+            "Add keyword to sample",
+            f'Value for "{normalized_name}":',
+        )
+        if not accepted:
+            return
+
+        self.workspace.add_keyword_column(normalized_name)
+        self.workspace.samples[sample_index].keywords[normalized_name] = keyword_value
+        self._refresh_sample_table()
+        self.statusBar().showMessage(
+            f'Added keyword "{normalized_name}" to {self.workspace.samples[sample_index].sample_name}',
+            4000,
+        )
 
         control_options = [
             "Single stain",
@@ -2024,8 +2162,9 @@ class MainWindow(QMainWindow):
         workspace_sample.group_name = normalized_group
         self._refresh_group_list()
         self._refresh_sample_list(select_active=True)
+        self._refresh_sample_table()
         self.statusBar().showMessage(
-            f"{workspace_sample.sample.file_name} assigned to {workspace_sample.group_name}",
+            f"{workspace_sample.sample_name} assigned to {workspace_sample.group_name}",
             4000,
         )
 
@@ -2077,41 +2216,23 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("The source sample has no gates to propagate", 5000)
             return
 
-        if scope == "group":
-            target_samples = [
-                candidate
-                for idx, candidate in enumerate(self.workspace.samples)
-                if idx != sample_index and candidate.group_name == source_sample.group_name
-            ]
-            scope_label = f"group {source_sample.group_name}"
-        else:
-            target_samples = [
-                candidate
-                for idx, candidate in enumerate(self.workspace.samples)
-                if idx != sample_index
-            ]
-            scope_label = "all samples"
+        target_group_name = source_sample.group_name if scope == "group" else None
+        applied_count, failures, scope_label = self.gate_service.propagate_gates(
+            self.workspace,
+            source_sample_index=sample_index,
+            gate_names=[gate.name for gate in gates_to_apply],
+            target_group_name=target_group_name,
+        )
 
-        if not target_samples:
+        if applied_count == 0 and not failures:
             self.statusBar().showMessage(f"No target samples available in {scope_label}", 5000)
             return
-
-        applied_count = 0
-        failures: list[str] = []
-        for target in target_samples:
-            try:
-                if mode == "active_gate":
-                    self._upsert_gate_on_sample(target, gates_to_apply[0])
-                else:
-                    self._replace_gates_on_sample(target, gates_to_apply)
-                applied_count += 1
-            except Exception as exc:
-                failures.append(f"{target.sample.file_name}: {exc}")
 
         if self.workspace.active_sample_index is not None:
             self._sync_from_workspace()
             self._refresh_gate_panel()
             self.redraw_current_plot(show_status=False)
+        self._refresh_sample_table()
 
         if failures and applied_count == 0:
             QMessageBox.warning(self, "Apply gates", "\n".join(failures))
@@ -2132,35 +2253,17 @@ class MainWindow(QMainWindow):
         )
 
     def _replace_gates_on_sample(self, target_sample: WorkspaceSample, source_gates: list[GateModel]) -> None:
-        for gate in source_gates:
-            self._delete_gate_subtree(target_sample.gates, gate.name)
-        cloned_gates = self.gate_service.clone_gate_sequence_to_sample(source_gates, target_sample.sample)
-        target_sample.gates.extend(cloned_gates)
-        if target_sample.active_gate_name and all(
-            gate.name != target_sample.active_gate_name for gate in target_sample.gates
-        ):
-            target_sample.active_gate_name = None
+        self.gate_service.replace_gates_on_sample(target_sample, source_gates)
 
     def _upsert_gate_on_sample(self, target_sample: WorkspaceSample, gate: GateModel) -> None:
-        self._delete_gate_subtree(target_sample.gates, gate.name)
-        cloned_gate = self.gate_service.clone_gate_to_sample(gate, target_sample.sample, target_sample.gates)
-        target_sample.gates.append(cloned_gate)
+        self.gate_service.upsert_gate_on_sample(target_sample, gate)
 
     @staticmethod
     def _gate_subtree_names(gates: list[GateModel], root_name: str) -> set[str]:
-        names_to_delete = {root_name}
-        changed = True
-        while changed:
-            changed = False
-            for candidate in gates:
-                if candidate.parent_name in names_to_delete and candidate.name not in names_to_delete:
-                    names_to_delete.add(candidate.name)
-                    changed = True
-        return names_to_delete
+        return GateService.gate_subtree_names(gates, root_name)
 
     def _delete_gate_subtree(self, gates: list[GateModel], root_name: str) -> None:
-        names_to_delete = self._gate_subtree_names(gates, root_name)
-        gates[:] = [candidate for candidate in gates if candidate.name not in names_to_delete]
+        self.gate_service.delete_gate_subtree(gates, root_name)
 
     def show_about_dialog(self) -> None:
         QMessageBox.about(

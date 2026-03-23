@@ -433,6 +433,401 @@ def test_delete_gate_from_context_removes_gate(monkeypatch) -> None:
     assert window.sample_panel.gate_list.item(0).text() == "All events"
 
 
+def test_sample_manager_can_edit_sample_name_and_group() -> None:
+    get_app()
+    window = MainWindow()
+    window.workspace.add_sample(make_sample("demo.fcs"))
+    window._sync_from_workspace()
+    window._refresh_group_list()
+    window._refresh_sample_list(select_active=True)
+    window.open_sample_table()
+
+    manager = window._sample_table_window
+    assert manager is not None
+
+    manager._table.item(0, 0).setText("Patient A")
+    manager._table.item(0, 1).setText("Controls")
+
+    assert window.workspace.samples[0].sample_name == "Patient A"
+    assert window.workspace.samples[0].group_name == "Controls"
+    assert window.sample_panel.sample_list.item(0).text() == "Patient A"
+
+
+def test_sample_manager_can_delete_selected_samples(monkeypatch) -> None:
+    get_app()
+    window = MainWindow()
+    window.workspace.add_sample(make_sample("a.fcs"))
+    window.workspace.add_sample(make_sample("b.fcs"))
+    window._sync_from_workspace()
+    window._refresh_group_list()
+    window._refresh_sample_list(select_active=True)
+    window.open_sample_table()
+
+    manager = window._sample_table_window
+    assert manager is not None
+
+    manager._table.selectRow(0)
+    monkeypatch.setattr(
+        "cytodraft.gui.sample_table_window.QMessageBox.question",
+        lambda *args, **kwargs: QMessageBox.StandardButton.Yes,
+    )
+
+    manager._on_delete_selected_samples()
+
+    assert len(window.workspace.samples) == 1
+    assert window.workspace.samples[0].sample.file_name == "b.fcs"
+    assert window.sample_panel.sample_list.count() == 1
+
+
+def test_sample_manager_gate_tree_can_apply_selected_gate_subtree_to_group() -> None:
+    get_app()
+    window = MainWindow()
+    source = make_sample("source.fcs")
+    target = make_sample("target.fcs")
+
+    source_state = window.workspace.add_sample(source, group_name="Controls")
+    source_state.gates.extend(
+        [
+            RangeGate(
+                name="Parent",
+                parent_name="All events",
+                channel_index=0,
+                channel_label="FSC-A",
+                x_min=2.0,
+                x_max=5.0,
+                event_count=2,
+                percentage_parent=50.0,
+                percentage_total=50.0,
+                full_mask=np.array([False, True, True, False]),
+            ),
+            RangeGate(
+                name="Child",
+                parent_name="Parent",
+                channel_index=1,
+                channel_label="SSC-A",
+                x_min=3.0,
+                x_max=6.0,
+                event_count=2,
+                percentage_parent=100.0,
+                percentage_total=50.0,
+                full_mask=np.array([False, True, True, False]),
+            ),
+        ]
+    )
+    window.workspace.add_sample(target, group_name="Controls")
+    window._sync_from_workspace()
+    window._refresh_group_list()
+    window._refresh_sample_list(select_active=True)
+    window.open_sample_table()
+
+    manager = window._sample_table_window
+    assert manager is not None
+
+    manager._table.selectRow(0)
+    manager._rebuild_gate_browser()
+
+    assert manager._gate_tree.topLevelItemCount() == 1
+    assert manager._gate_tree.topLevelItem(0).text(0) == "Parent"
+    assert manager._gate_tree.topLevelItem(0).child(0).text(0) == "Child"
+
+    manager._apply_selected_gates(0, ["Parent"], "Controls")
+
+    cloned_parent, cloned_child = window.workspace.samples[1].gates
+    assert cloned_parent.name == "Parent"
+    assert cloned_child.name == "Child"
+    assert cloned_child.parent_name == "Parent"
+
+
+def test_sample_manager_statistics_button_adds_statistic_columns(monkeypatch) -> None:
+    get_app()
+    window = MainWindow()
+    window.workspace.add_sample(make_sample("demo.fcs"))
+    window._sync_from_workspace()
+    window._refresh_group_list()
+    window._refresh_sample_list(select_active=True)
+    window.open_sample_table()
+
+    manager = window._sample_table_window
+    assert manager is not None
+
+    class FakeDialog:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def exec(self) -> bool:
+            return True
+
+        def selected_group_name(self) -> str | None:
+            return None
+
+        def selected_population_name(self) -> str:
+            return "All events"
+
+        def selected_channel_name(self) -> str:
+            return "FSC-A"
+
+        def selected_metric_keys(self) -> list[str]:
+            return ["event_count", "mean"]
+
+    monkeypatch.setattr("cytodraft.gui.sample_table_window.StatisticsColumnDialog", FakeDialog)
+
+    manager._on_add_statistics()
+
+    headers = [
+        manager._table.horizontalHeaderItem(col).text()
+        for col in range(manager._table.columnCount())
+    ]
+    assert any("All samples | All events | FSC-A | Event count" == header for header in headers)
+    assert any("All samples | All events | FSC-A | Mean" == header for header in headers)
+
+    event_count_col = headers.index("All samples | All events | FSC-A | Event count")
+    mean_col = headers.index("All samples | All events | FSC-A | Mean")
+    assert manager._table.item(0, event_count_col).text() == "4"
+    assert manager._table.item(0, mean_col).text() == "3.0000"
+
+
+def test_sample_manager_can_remove_one_statistic_column(monkeypatch) -> None:
+    get_app()
+    window = MainWindow()
+    window.workspace.add_sample(make_sample("demo.fcs"))
+    window.workspace.add_statistic_column(
+        window.statistics_service.make_columns(
+            group_name=None,
+            population_name="All events",
+            channel_name="FSC-A",
+            statistic_keys=["event_count", "mean"],
+        )[0]
+    )
+    window.workspace.add_statistic_column(
+        window.statistics_service.make_columns(
+            group_name=None,
+            population_name="All events",
+            channel_name="FSC-A",
+            statistic_keys=["event_count", "mean"],
+        )[1]
+    )
+    window.open_sample_table()
+    manager = window._sample_table_window
+    assert manager is not None
+
+    monkeypatch.setattr(
+        "cytodraft.gui.sample_table_window.QInputDialog.getItem",
+        lambda *args, **kwargs: ("All samples | All events | FSC-A | Event count", True),
+    )
+
+    manager._on_remove_statistics()
+
+    headers = [
+        manager._table.horizontalHeaderItem(col).text()
+        for col in range(manager._table.columnCount())
+    ]
+    assert "All samples | All events | FSC-A | Event count" not in headers
+    assert "All samples | All events | FSC-A | Mean" in headers
+
+
+def test_sample_manager_can_clear_all_statistic_columns(monkeypatch) -> None:
+    get_app()
+    window = MainWindow()
+    window.workspace.add_sample(make_sample("demo.fcs"))
+    for column in window.statistics_service.make_columns(
+        group_name=None,
+        population_name="All events",
+        channel_name="FSC-A",
+        statistic_keys=["event_count", "mean"],
+    ):
+        window.workspace.add_statistic_column(column)
+    window.open_sample_table()
+    manager = window._sample_table_window
+    assert manager is not None
+
+    monkeypatch.setattr(
+        "cytodraft.gui.sample_table_window.QInputDialog.getItem",
+        lambda *args, **kwargs: ("Clear all statistic columns", True),
+    )
+    monkeypatch.setattr(
+        "cytodraft.gui.sample_table_window.QMessageBox.question",
+        lambda *args, **kwargs: QMessageBox.StandardButton.Yes,
+    )
+
+    manager._on_remove_statistics()
+
+    headers = [
+        manager._table.horizontalHeaderItem(col).text()
+        for col in range(manager._table.columnCount())
+    ]
+    assert not any(header.startswith("All samples | All events | FSC-A |") for header in headers)
+
+
+def test_sample_manager_can_collapse_column_sections() -> None:
+    get_app()
+    window = MainWindow()
+    sample_state = window.workspace.add_sample(make_sample("demo.fcs"))
+    sample_state.gates.append(
+        RangeGate(
+            name="Live",
+            parent_name="All events",
+            channel_index=0,
+            channel_label="FSC-A",
+            x_min=0.0,
+            x_max=10.0,
+            event_count=4,
+            percentage_parent=100.0,
+            percentage_total=100.0,
+            full_mask=np.array([True, True, True, True]),
+        )
+    )
+    window.workspace.add_keyword_column("Patient")
+    window.workspace.samples[0].keywords["Patient"] = "P1"
+    for column in window.statistics_service.make_columns(
+        group_name=None,
+        population_name="All events",
+        channel_name="FSC-A",
+        statistic_keys=["mean"],
+    ):
+        window.workspace.add_statistic_column(column)
+
+    window.open_sample_table()
+    manager = window._sample_table_window
+    assert manager is not None
+
+    headers = [
+        manager._table.horizontalHeaderItem(col).text()
+        for col in range(manager._table.columnCount())
+    ]
+    assert "Live  -  events" in headers
+    assert "All samples | All events | FSC-A | Mean" in headers
+    assert "Patient" in headers
+
+    manager._toggle_gates_btn.click()
+    manager._toggle_stats_btn.click()
+    manager._toggle_keywords_btn.click()
+
+    headers = [
+        manager._table.horizontalHeaderItem(col).text()
+        for col in range(manager._table.columnCount())
+    ]
+    assert headers == ["Sample", "Group", "Total events"]
+    assert manager._sections_label.text() == "Columns: sample info (gray)"
+
+
+def test_sample_manager_group_actions_can_create_and_delete_group(monkeypatch) -> None:
+    get_app()
+    window = MainWindow()
+    window.workspace.add_sample(make_sample("demo.fcs"), group_name="Controls")
+    window.open_sample_table()
+    manager = window._sample_table_window
+    assert manager is not None
+
+    monkeypatch.setattr(
+        "cytodraft.gui.sample_table_window.QInputDialog.getText",
+        lambda *args, **kwargs: ("Treatment", True),
+    )
+    manager._on_create_group()
+    assert "Treatment" in window.workspace.groups
+
+    treatment_item = manager._find_group_list_item("Treatment")
+    assert treatment_item is not None
+    manager._group_list.setCurrentItem(treatment_item)
+    monkeypatch.setattr(
+        "cytodraft.gui.sample_table_window.QMessageBox.question",
+        lambda *args, **kwargs: QMessageBox.StandardButton.Yes,
+    )
+    manager._on_delete_group()
+    assert "Treatment" not in window.workspace.groups
+
+
+def test_sample_manager_add_samples_button_uses_selected_group(monkeypatch) -> None:
+    get_app()
+    window = MainWindow()
+    window.workspace.ensure_group("Controls")
+    window.open_sample_table()
+    manager = window._sample_table_window
+    assert manager is not None
+
+    controls_item = manager._find_group_list_item("Controls")
+    assert controls_item is not None
+    manager._group_list.setCurrentItem(controls_item)
+
+    requested_groups: list[str | None] = []
+    manager._on_add_samples_requested = requested_groups.append
+    manager._on_add_samples()
+
+    assert requested_groups == ["Controls"]
+
+
+def test_sample_manager_assign_samples_to_group_updates_workspace() -> None:
+    get_app()
+    window = MainWindow()
+    window.workspace.add_sample(make_sample("a.fcs"), group_name="Ungrouped")
+    window.workspace.add_sample(make_sample("b.fcs"), group_name="Ungrouped")
+    window.workspace.ensure_group("Controls")
+    window.open_sample_table()
+    manager = window._sample_table_window
+    assert manager is not None
+
+    manager._assign_samples_to_group([0, 1], "Controls")
+
+    assert window.workspace.samples[0].group_name == "Controls"
+    assert window.workspace.samples[1].group_name == "Controls"
+
+
+def test_sample_manager_can_copy_keyword_value_to_group() -> None:
+    get_app()
+    window = MainWindow()
+    window.workspace.add_keyword_column("Patient")
+    a = window.workspace.add_sample(make_sample("a.fcs"), group_name="Controls")
+    b = window.workspace.add_sample(make_sample("b.fcs"), group_name="Controls")
+    c = window.workspace.add_sample(make_sample("c.fcs"), group_name="Specimen 1")
+    a.keywords["Patient"] = "P-001"
+    b.keywords["Patient"] = ""
+    c.keywords["Patient"] = ""
+    window.open_sample_table()
+    manager = window._sample_table_window
+    assert manager is not None
+
+    manager._copy_keyword_value(0, manager._n_fixed_cols, scope="group")
+
+    assert window.workspace.samples[0].keywords["Patient"] == "P-001"
+    assert window.workspace.samples[1].keywords["Patient"] == "P-001"
+    assert window.workspace.samples[2].keywords["Patient"] == ""
+
+
+def test_sample_manager_can_copy_keyword_value_to_all_samples() -> None:
+    get_app()
+    window = MainWindow()
+    window.workspace.add_keyword_column("Patient")
+    a = window.workspace.add_sample(make_sample("a.fcs"), group_name="Controls")
+    b = window.workspace.add_sample(make_sample("b.fcs"), group_name="Controls")
+    c = window.workspace.add_sample(make_sample("c.fcs"), group_name="Specimen 1")
+    a.keywords["Patient"] = "P-001"
+    b.keywords["Patient"] = ""
+    c.keywords["Patient"] = ""
+    window.open_sample_table()
+    manager = window._sample_table_window
+    assert manager is not None
+
+    manager._copy_keyword_value(0, manager._n_fixed_cols, scope="all")
+
+    assert window.workspace.samples[0].keywords["Patient"] == "P-001"
+    assert window.workspace.samples[1].keywords["Patient"] == "P-001"
+    assert window.workspace.samples[2].keywords["Patient"] == "P-001"
+
+
+def test_sample_manager_can_remove_samples_from_group() -> None:
+    get_app()
+    window = MainWindow()
+    window.workspace.add_sample(make_sample("a.fcs"), group_name="Controls")
+    window.workspace.add_sample(make_sample("b.fcs"), group_name="Controls")
+    window.open_sample_table()
+    manager = window._sample_table_window
+    assert manager is not None
+
+    manager._remove_samples_from_group([0, 1])
+
+    assert window.workspace.samples[0].group_name == "Ungrouped"
+    assert window.workspace.samples[1].group_name == "Ungrouped"
+
+
 def test_current_population_color_uses_active_gate_color() -> None:
     get_app()
     window = MainWindow()
