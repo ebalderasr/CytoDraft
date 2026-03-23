@@ -100,6 +100,23 @@ class WorkspaceState:
     universal_negative_sample_index: int | None = None
     keyword_columns: list[str] = field(default_factory=list)
     statistic_columns: list[WorkspaceStatisticColumn] = field(default_factory=list)
+    # Spillover / compensation matrix (user-edited override; plain Python for
+    # easy serialisation – no numpy in the model layer).
+    spillover_channels: list[str] = field(default_factory=list)
+    spillover_values: list[float] = field(default_factory=list)  # n×n flat row-major
+
+    @property
+    def has_spillover(self) -> bool:
+        n = len(self.spillover_channels)
+        return n > 0 and len(self.spillover_values) == n * n
+
+    def set_spillover(self, channels: list[str], matrix_values: list[float]) -> None:
+        self.spillover_channels = list(channels)
+        self.spillover_values = list(matrix_values)
+
+    def clear_spillover(self) -> None:
+        self.spillover_channels = []
+        self.spillover_values = []
 
     def add_keyword_column(self, name: str) -> None:
         if name not in self.keyword_columns:
