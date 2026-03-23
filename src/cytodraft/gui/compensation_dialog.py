@@ -956,18 +956,18 @@ class CompensationWindow(QDialog):
         self._tabs = QTabWidget()
 
         # Tab 1: Setup
-        self._setup_panel = _ControlSetupPanel(workspace)
+        self._setup_panel = _ControlSetupPanel(self.workspace)
         self._setup_panel.changed.connect(self._on_setup_saved)
         self._tabs.addTab(self._setup_panel, "Control setup")
 
         # Tab 2: Matrix
-        self._matrix_tab = _MatrixTab(workspace)
+        self._matrix_tab = _MatrixTab(self.workspace)
         self._matrix_tab.matrix_updated.connect(self._on_matrix_updated)
         self._tabs.addTab(self._matrix_tab, "Spillover matrix")
 
         # Tab 3: Verification scatter
         self._scatter = _ScatterPane()
-        self._scatter.set_workspace(workspace)
+        self._scatter.set_workspace(self.workspace)
         self._tabs.addTab(self._scatter, "Scatter verification")
 
         splitter.addWidget(self._tabs)
