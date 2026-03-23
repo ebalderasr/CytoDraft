@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QFormLayout,
     QGroupBox,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -76,7 +77,7 @@ class SamplePanel(QWidget):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setMinimumWidth(0)
+        self.setMinimumWidth(300)
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
         self._plot_mode = "scatter"
 
@@ -84,19 +85,19 @@ class SamplePanel(QWidget):
         self.sample_list.setAlternatingRowColors(True)
         self.sample_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.sample_list.setSpacing(2)
-        self.sample_list.setMinimumHeight(90)
+        self.sample_list.setMinimumHeight(120)
 
         self.group_list = QListWidget()
         self.group_list.setAlternatingRowColors(True)
         self.group_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.group_list.setSpacing(2)
-        self.group_list.setMinimumHeight(70)
+        self.group_list.setMinimumHeight(88)
 
         self.gate_list = QListWidget()
         self.gate_list.setAlternatingRowColors(True)
         self.gate_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.gate_list.setSpacing(2)
-        self.gate_list.setMinimumHeight(70)
+        self.gate_list.setMinimumHeight(96)
 
         self.add_group_button = _make_manager_button(
             "+",
@@ -217,8 +218,8 @@ class SamplePanel(QWidget):
         gate_box.setLayout(gate_layout)
 
         layout = QVBoxLayout()
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(14)
+        layout.setContentsMargins(2, 2, 2, 2)
+        layout.setSpacing(12)
         layout.addWidget(group_box, stretch=2)
         layout.addWidget(sample_box, stretch=3)
         layout.addWidget(gate_box, stretch=2)
@@ -547,7 +548,7 @@ class InspectorPanel(QWidget):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setMinimumWidth(0)
+        self.setMinimumWidth(300)
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
 
         self.file_label = QLabel("—")
@@ -555,6 +556,18 @@ class InspectorPanel(QWidget):
         self.channels_label = QLabel("—")
         self.active_gate_label = QLabel("—")
         self.displayed_points_label = QLabel("—")
+        self._sample_header_label = QLabel("Current sample")
+        self._sample_header_label.setObjectName("inspectorSectionLabel")
+        self._file_caption_label = QLabel("File")
+        self._file_caption_label.setObjectName("inspectorCaption")
+        self._events_caption_label = QLabel("Events")
+        self._events_caption_label.setObjectName("inspectorCaption")
+        self._channels_caption_label = QLabel("Channels")
+        self._channels_caption_label.setObjectName("inspectorCaption")
+        self._displayed_caption_label = QLabel("Displayed")
+        self._displayed_caption_label.setObjectName("inspectorCaption")
+        self._active_caption_label = QLabel("Active population")
+        self._active_caption_label.setObjectName("inspectorCaption")
 
         for label in (
             self.file_label,
@@ -565,14 +578,34 @@ class InspectorPanel(QWidget):
         ):
             label.setTextInteractionFlags(Qt.TextSelectableByMouse)
 
-        info_box = QGroupBox("Inspector")
-        info_form = QFormLayout()
-        info_form.addRow("File:", self.file_label)
-        info_form.addRow("Events:", self.events_label)
-        info_form.addRow("Channels:", self.channels_label)
-        info_form.addRow("Active population:", self.active_gate_label)
-        info_form.addRow("Displayed:", self.displayed_points_label)
-        info_box.setLayout(info_form)
+        self.file_label.setObjectName("inspectorFileValue")
+        self.file_label.setWordWrap(True)
+        self.events_label.setObjectName("inspectorMetricValue")
+        self.channels_label.setObjectName("inspectorMetricValue")
+        self.displayed_points_label.setObjectName("inspectorMetricValue")
+        self.active_gate_label.setObjectName("inspectorActiveValue")
+
+        info_box = QGroupBox("Session")
+        info_layout = QVBoxLayout()
+        info_layout.setSpacing(10)
+        info_layout.addWidget(self._sample_header_label)
+        info_layout.addWidget(self._file_caption_label)
+        info_layout.addWidget(self.file_label)
+
+        metrics_grid = QGridLayout()
+        metrics_grid.setContentsMargins(0, 0, 0, 0)
+        metrics_grid.setHorizontalSpacing(8)
+        metrics_grid.setVerticalSpacing(6)
+        metrics_grid.addWidget(self._events_caption_label, 0, 0)
+        metrics_grid.addWidget(self._channels_caption_label, 0, 1)
+        metrics_grid.addWidget(self._displayed_caption_label, 0, 2)
+        metrics_grid.addWidget(self.events_label, 1, 0)
+        metrics_grid.addWidget(self.channels_label, 1, 1)
+        metrics_grid.addWidget(self.displayed_points_label, 1, 2)
+        info_layout.addLayout(metrics_grid)
+        info_layout.addWidget(self._active_caption_label)
+        info_layout.addWidget(self.active_gate_label)
+        info_box.setLayout(info_layout)
 
         self.plot_mode_combo = QComboBox()
         self.plot_mode_combo.addItem("Scatter (2D)", "scatter")
@@ -623,11 +656,13 @@ class InspectorPanel(QWidget):
             self.apply_view_button,
             self.auto_range_button,
         ):
-            button.setMinimumHeight(38)
+            button.setMinimumHeight(34)
             button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
         visualization_box = QGroupBox("Visualization")
         visualization_form = QFormLayout()
+        visualization_form.setHorizontalSpacing(10)
+        visualization_form.setVerticalSpacing(8)
         visualization_form.addRow("Plot mode:", self.plot_mode_combo)
         visualization_form.addRow("X axis:", self.x_axis_combo)
         visualization_form.addRow("Y axis:", self.y_axis_combo)
@@ -636,24 +671,45 @@ class InspectorPanel(QWidget):
 
         plot_adjustments_box = QGroupBox("Scales & Range")
         plot_adjustments_form = QFormLayout()
+        plot_adjustments_form.setHorizontalSpacing(10)
+        plot_adjustments_form.setVerticalSpacing(8)
         plot_adjustments_form.addRow("X scale:", self.x_scale_combo)
         plot_adjustments_form.addRow("Y scale:", self.y_scale_combo)
-        plot_adjustments_form.addRow("X min:", self.x_min_edit)
-        plot_adjustments_form.addRow("X max:", self.x_max_edit)
-        plot_adjustments_form.addRow("Y min:", self.y_min_edit)
-        plot_adjustments_form.addRow("Y max:", self.y_max_edit)
-        plot_adjustments_form.addRow("", self.apply_view_button)
-        plot_adjustments_form.addRow("", self.auto_range_button)
-        plot_adjustments_form.addRow("", self.limit_points_checkbox)
-        plot_adjustments_form.addRow("Max points:", self.max_points_spin)
         plot_adjustments_box.setLayout(plot_adjustments_form)
+
+        range_box = QGroupBox("Visible Range")
+        range_layout = QFormLayout()
+        range_layout.setContentsMargins(0, 0, 0, 0)
+        range_layout.setHorizontalSpacing(10)
+        range_layout.setVerticalSpacing(8)
+        range_layout.addRow("X min:", self.x_min_edit)
+        range_layout.addRow("X max:", self.x_max_edit)
+        range_layout.addRow("Y min:", self.y_min_edit)
+        range_layout.addRow("Y max:", self.y_max_edit)
+        range_box.setLayout(range_layout)
+
+        quick_actions_box = QGroupBox("Quick Actions")
+        quick_actions_layout = QVBoxLayout()
+        quick_actions_layout.setSpacing(8)
+        quick_actions_layout.addWidget(self.apply_view_button)
+        quick_actions_layout.addWidget(self.auto_range_button)
+        quick_actions_layout.addWidget(self.limit_points_checkbox)
+        sampling_row = QFormLayout()
+        sampling_row.setContentsMargins(0, 0, 0, 0)
+        sampling_row.setHorizontalSpacing(10)
+        sampling_row.addRow("Max points:", self.max_points_spin)
+        quick_actions_layout.addLayout(sampling_row)
+        quick_actions_layout.addStretch(1)
+        quick_actions_box.setLayout(quick_actions_layout)
 
         view_controls_box = QWidget()
         view_layout = QVBoxLayout()
         view_layout.setContentsMargins(0, 0, 0, 0)
-        view_layout.setSpacing(12)
+        view_layout.setSpacing(10)
         view_layout.addWidget(visualization_box)
         view_layout.addWidget(plot_adjustments_box)
+        view_layout.addWidget(range_box)
+        view_layout.addWidget(quick_actions_box)
         view_layout.addStretch(1)
         view_controls_box.setLayout(view_layout)
 
@@ -724,7 +780,7 @@ class InspectorPanel(QWidget):
         statistics_box = QWidget()
         statistics_layout = QVBoxLayout()
         statistics_layout.setContentsMargins(0, 0, 0, 0)
-        statistics_layout.setSpacing(12)
+        statistics_layout.setSpacing(10)
 
         statistics_selection_box = QGroupBox("Statistics selection")
         statistics_selection_form = QFormLayout()
@@ -764,24 +820,45 @@ class InspectorPanel(QWidget):
         compensation_box = QWidget()
         compensation_layout = QVBoxLayout()
         compensation_layout.setContentsMargins(0, 0, 0, 0)
-        compensation_layout.setSpacing(12)
+        compensation_layout.setSpacing(10)
 
-        compensation_selection_box = QGroupBox("Compensation setup")
+        compensation_status_box = QGroupBox("Compensation status")
+        compensation_status_layout = QVBoxLayout()
+        compensation_status_layout.setSpacing(8)
+        compensation_status_layout.addWidget(self.compensation_status_label)
+        compensation_status_box.setLayout(compensation_status_layout)
+
+        compensation_selection_box = QGroupBox("Assignment")
         compensation_selection_form = QFormLayout()
-        compensation_selection_form.setVerticalSpacing(10)
+        compensation_selection_form.setHorizontalSpacing(10)
+        compensation_selection_form.setVerticalSpacing(8)
         compensation_selection_form.addRow("Control sample:", self.compensation_sample_combo)
         compensation_selection_form.addRow("Universal negative:", self.universal_negative_combo)
-        compensation_selection_form.addRow("", self.assign_positive_button)
-        compensation_selection_form.addRow("", self.assign_negative_button)
-        compensation_selection_form.addRow("", self.compensation_status_label)
         compensation_selection_box.setLayout(compensation_selection_form)
+
+        compensation_actions_box = QGroupBox("Actions")
+        compensation_actions_layout = QVBoxLayout()
+        compensation_actions_layout.setSpacing(8)
+        compensation_actions_layout.addWidget(self.assign_positive_button)
+        compensation_actions_layout.addWidget(self.assign_negative_button)
+        compensation_actions_layout.addStretch(1)
+        compensation_actions_box.setLayout(compensation_actions_layout)
+
+        compensation_top_row = QWidget()
+        compensation_top_layout = QHBoxLayout()
+        compensation_top_layout.setContentsMargins(0, 0, 0, 0)
+        compensation_top_layout.setSpacing(10)
+        compensation_top_layout.addWidget(compensation_selection_box, stretch=2)
+        compensation_top_layout.addWidget(compensation_actions_box, stretch=1)
+        compensation_top_row.setLayout(compensation_top_layout)
 
         compensation_table_box = QGroupBox("Controls")
         compensation_table_layout = QVBoxLayout()
         compensation_table_layout.addWidget(self.compensation_table)
         compensation_table_box.setLayout(compensation_table_layout)
 
-        compensation_layout.addWidget(compensation_selection_box)
+        compensation_layout.addWidget(compensation_status_box)
+        compensation_layout.addWidget(compensation_top_row)
         compensation_layout.addWidget(compensation_table_box)
         compensation_layout.addStretch(1)
         compensation_box.setLayout(compensation_layout)
@@ -790,7 +867,7 @@ class InspectorPanel(QWidget):
 
         layout = QVBoxLayout()
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(10)
+        layout.setSpacing(8)
         layout.addWidget(info_box)
         layout.addWidget(self.controls_tabs, stretch=1)
         self.setLayout(layout)

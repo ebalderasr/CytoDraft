@@ -54,23 +54,24 @@ class CytometryPlotWidget(QWidget):
         super().__init__(parent)
         self.setMinimumWidth(0)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.setObjectName("plotSurface")
 
         self.plot_widget = pg.PlotWidget()
         self.plot_widget.setBackground("#fbfdff")
         self.plot_widget.showGrid(x=True, y=True, alpha=0.12)
         self.plot_widget.setLabel("bottom", "X")
         self.plot_widget.setLabel("left", "Y")
-        self.plot_widget.setTitle("CytoDraft plot area", color="#334155", size="12pt")
+        self.plot_widget.setTitle("Workspace plot", color="#334155", size="12pt")
         self.plot_widget.setMenuEnabled(False)
         self.plot_widget.setAntialiasing(True)
-        self.plot_widget.getPlotItem().getViewBox().setBorder(pg.mkPen("#d9e2ec"))
+        self.plot_widget.getPlotItem().getViewBox().setBorder(pg.mkPen("#d6e0ea"))
         self.plot_widget.getAxis("bottom").setPen(pg.mkPen("#94a3b8"))
         self.plot_widget.getAxis("left").setPen(pg.mkPen("#94a3b8"))
         self.plot_widget.getAxis("bottom").setTextPen(pg.mkPen("#475569"))
         self.plot_widget.getAxis("left").setTextPen(pg.mkPen("#475569"))
 
         layout = QVBoxLayout()
-        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setContentsMargins(8, 8, 8, 8)
         layout.addWidget(self.plot_widget)
         self.setLayout(layout)
 
@@ -102,7 +103,7 @@ class CytometryPlotWidget(QWidget):
         rng = np.random.default_rng(42)
         x = rng.normal(loc=5_000, scale=1_200, size=1200)
         y = rng.normal(loc=8_000, scale=1_800, size=1200)
-        self.plot_scatter(x, y, "FSC-A", "SSC-A", title="Placeholder scatter")
+        self.plot_scatter(x, y, "FSC-A", "SSC-A", title="Load a sample or draw a gate")
 
     def show_empty_message(self, title: str = "No data loaded") -> None:
         self.plot_widget.clear()

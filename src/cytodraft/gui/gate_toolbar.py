@@ -22,29 +22,29 @@ _BTN_BASE = (
 )
 
 _DRAW_DEFAULT = _BTN_BASE + (
-    "QPushButton { background: #e5e7eb; color: #374151; border: 1px solid #d1d5db; }"
-    "QPushButton:hover { background: #d1d5db; }"
-    "QPushButton:pressed { background: #c4c9d0; }"
+    "QPushButton { background: #f4f7fb; color: #314255; border: 1px solid #d4dde7; }"
+    "QPushButton:hover { background: #e9eff6; }"
+    "QPushButton:pressed { background: #dce4ee; }"
 )
 
 _APPLY_INACTIVE = _BTN_BASE + (
-    "QPushButton { background: #e5e7eb; color: #9ca3af; border: 1px solid #d1d5db; }"
+    "QPushButton { background: #eef2f6; color: #97a4b2; border: 1px solid #d4dde7; }"
 )
 
 _APPLY_ACTIVE = _BTN_BASE + (
-    "QPushButton { background: #2563eb; color: #ffffff; border: 1px solid #1d4ed8; }"
-    "QPushButton:hover { background: #1d4ed8; }"
-    "QPushButton:pressed { background: #1e40af; }"
+    "QPushButton { background: #2b6ef3; color: #ffffff; border: 1px solid #1f5fe0; }"
+    "QPushButton:hover { background: #1f5fe0; }"
+    "QPushButton:pressed { background: #194eb8; }"
 )
 
 _CLEAR_INACTIVE = _BTN_BASE + (
-    "QPushButton { background: #e5e7eb; color: #9ca3af; border: 1px solid #d1d5db; }"
+    "QPushButton { background: #eef2f6; color: #97a4b2; border: 1px solid #d4dde7; }"
 )
 
 _CLEAR_ACTIVE = _BTN_BASE + (
-    "QPushButton { background: #fff1f2; color: #b42318; border: 1px solid #fecdd3; }"
-    "QPushButton:hover { background: #ffe4e6; }"
-    "QPushButton:pressed { background: #fecdd3; }"
+    "QPushButton { background: #fff2f3; color: #b42318; border: 1px solid #f5c2c7; }"
+    "QPushButton:hover { background: #ffe7ea; }"
+    "QPushButton:pressed { background: #ffd5db; }"
 )
 
 
@@ -68,7 +68,7 @@ class GateToolbar(QWidget):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setFixedHeight(52)
+        self.setFixedHeight(58)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
         self._plot_mode = "scatter"
@@ -115,8 +115,8 @@ class GateToolbar(QWidget):
 
         # ── Layout ────────────────────────────────────────────────────
         layout = QHBoxLayout()
-        layout.setContentsMargins(12, 8, 12, 8)
-        layout.setSpacing(8)
+        layout.setContentsMargins(14, 10, 14, 10)
+        layout.setSpacing(10)
         layout.addWidget(self._draw_btn)
         layout.addWidget(self._apply_btn)
         layout.addWidget(self._clear_btn)
@@ -127,7 +127,7 @@ class GateToolbar(QWidget):
 
         # Separator line at bottom
         self.setStyleSheet(
-            "GateToolbar { background: #ffffff; border-bottom: 1px solid #d9e2ec; }"
+            "GateToolbar { background: #fbfcfe; border-bottom: 1px solid #d7e0ea; }"
         )
 
     # ------------------------------------------------------------------

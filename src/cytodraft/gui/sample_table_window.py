@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPushButton,
+    QSizePolicy,
     QSplitter,
     QTableWidget,
     QTableWidgetItem,
@@ -152,7 +153,7 @@ class SampleTableWindow(QDialog):
 
     def _build_ui(self) -> None:
         filter_row = QHBoxLayout()
-        filter_row.setSpacing(8)
+        filter_row.setSpacing(6)
         filter_row.setContentsMargins(0, 0, 0, 0)
 
         filter_row.addWidget(QLabel("Filter:"))
@@ -191,7 +192,7 @@ class SampleTableWindow(QDialog):
         filter_row.addStretch(1)
 
         action_row = QHBoxLayout()
-        action_row.setSpacing(8)
+        action_row.setSpacing(6)
         action_row.setContentsMargins(0, 0, 0, 0)
 
         self._add_samples_btn = QPushButton("Add samples...")
@@ -245,16 +246,23 @@ class SampleTableWindow(QDialog):
 
         action_row.addStretch(1)
 
-        legend = QLabel(
-            "Editable: sample name, group, keywords. Select one sample to inspect and propagate its gate tree."
-        )
+        helper_row = QHBoxLayout()
+        helper_row.setSpacing(8)
+        helper_row.setContentsMargins(0, 0, 0, 0)
+
+        legend = QLabel("Edit sample names, groups, and keywords directly in the table.")
         legend.setStyleSheet("color: #6b7280; font-size: 11px;")
 
         sections = QLabel(
-            "Columns: sample info (gray) | gate summary (amber) | calculated statistics (violet) | editable keywords (blue)"
+            "Gray: sample info  |  Amber: gates  |  Violet: statistics  |  Blue: keywords"
         )
+        sections.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         sections.setStyleSheet("color: #6b7280; font-size: 11px;")
         self._sections_label = sections
+
+        helper_row.addWidget(legend)
+        helper_row.addStretch(1)
+        helper_row.addWidget(sections)
 
         self._table = SampleTableWidget(self._selected_sample_indices)
         self._table.setAlternatingRowColors(True)
@@ -286,11 +294,12 @@ class SampleTableWindow(QDialog):
         tree_hint.setStyleSheet("color: #6b7280; font-size: 11px;")
 
         table_panel = QWidget()
+        table_panel.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         table_layout = QVBoxLayout()
         table_layout.setContentsMargins(0, 0, 0, 0)
-        table_layout.setSpacing(6)
+        table_layout.setSpacing(4)
         table_layout.addWidget(QLabel("Samples"))
-        table_layout.addWidget(self._table)
+        table_layout.addWidget(self._table, stretch=1)
         table_panel.setLayout(table_layout)
 
         self._group_list = GroupListWidget(self._assign_samples_to_group)
@@ -333,9 +342,10 @@ class SampleTableWindow(QDialog):
         group_buttons.addWidget(self._delete_group_btn, 1, 1)
 
         group_panel = QWidget()
+        group_panel.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         group_layout = QVBoxLayout()
         group_layout.setContentsMargins(0, 0, 0, 0)
-        group_layout.setSpacing(6)
+        group_layout.setSpacing(4)
         group_layout.addWidget(QLabel("Groups"))
         group_layout.addWidget(self._group_list)
         group_layout.addLayout(group_buttons)
@@ -343,37 +353,48 @@ class SampleTableWindow(QDialog):
         group_panel.setLayout(group_layout)
 
         browser_panel = QWidget()
+        browser_panel.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
         browser_layout = QVBoxLayout()
         browser_layout.setContentsMargins(0, 0, 0, 0)
-        browser_layout.setSpacing(6)
+        browser_layout.setSpacing(4)
         browser_layout.addWidget(QLabel("Populations / gates"))
         browser_layout.addWidget(tree_hint)
-        browser_layout.addWidget(self._gate_tree)
+        browser_layout.addWidget(self._gate_tree, stretch=1)
         browser_panel.setLayout(browser_layout)
 
         right_panel = QWidget()
+        right_panel.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
         right_layout = QVBoxLayout()
         right_layout.setContentsMargins(0, 0, 0, 0)
-        right_layout.setSpacing(10)
+        right_layout.setSpacing(8)
         right_layout.addWidget(group_panel)
         right_layout.addWidget(browser_panel, stretch=1)
         right_panel.setLayout(right_layout)
 
         splitter = QSplitter(Qt.Horizontal)
+        splitter.setChildrenCollapsible(False)
         splitter.addWidget(table_panel)
         splitter.addWidget(right_panel)
         splitter.setStretchFactor(0, 5)
         splitter.setStretchFactor(1, 3)
         splitter.setSizes([980, 400])
+        splitter.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+
+        top_panel = QWidget()
+        top_panel.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        top_layout = QVBoxLayout()
+        top_layout.setContentsMargins(0, 0, 0, 0)
+        top_layout.setSpacing(4)
+        top_layout.addLayout(filter_row)
+        top_layout.addLayout(action_row)
+        top_layout.addLayout(helper_row)
+        top_panel.setLayout(top_layout)
 
         layout = QVBoxLayout()
         layout.setContentsMargins(14, 14, 14, 14)
-        layout.setSpacing(6)
-        layout.addLayout(filter_row)
-        layout.addLayout(action_row)
-        layout.addWidget(legend)
-        layout.addWidget(sections)
-        layout.addWidget(splitter)
+        layout.setSpacing(4)
+        layout.addWidget(top_panel)
+        layout.addWidget(splitter, stretch=1)
         self.setLayout(layout)
 
     def refresh(self) -> None:

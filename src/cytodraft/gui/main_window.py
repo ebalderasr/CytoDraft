@@ -100,10 +100,10 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Ready")
 
     def _build_ui(self) -> None:
-        # Wrap gate toolbar + plot in a vertical container
         plot_area = QWidget()
+        plot_area.setObjectName("plotAreaCard")
         plot_area_layout = QVBoxLayout()
-        plot_area_layout.setContentsMargins(0, 0, 0, 0)
+        plot_area_layout.setContentsMargins(10, 10, 10, 10)
         plot_area_layout.setSpacing(0)
         plot_area_layout.addWidget(self.gate_toolbar)
         plot_area_layout.addWidget(self.plot_panel)
@@ -115,10 +115,10 @@ class MainWindow(QMainWindow):
         splitter.addWidget(plot_area)
         splitter.addWidget(self.inspector_panel)
 
-        splitter.setStretchFactor(0, 2)
-        splitter.setStretchFactor(1, 7)
+        splitter.setStretchFactor(0, 3)
+        splitter.setStretchFactor(1, 5)
         splitter.setStretchFactor(2, 3)
-        splitter.setSizes([260, 800, 340])
+        splitter.setSizes([340, 700, 340])
 
         self.setCentralWidget(splitter)
         self._create_menu()
