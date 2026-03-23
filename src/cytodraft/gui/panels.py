@@ -82,19 +82,16 @@ class SamplePanel(QWidget):
         self._plot_mode = "scatter"
 
         self.sample_list = QListWidget()
-        self.sample_list.setAlternatingRowColors(True)
         self.sample_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.sample_list.setSpacing(2)
         self.sample_list.setMinimumHeight(120)
 
         self.group_list = QListWidget()
-        self.group_list.setAlternatingRowColors(True)
         self.group_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.group_list.setSpacing(2)
         self.group_list.setMinimumHeight(88)
 
         self.gate_list = QListWidget()
-        self.gate_list.setAlternatingRowColors(True)
         self.gate_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.gate_list.setSpacing(2)
         self.gate_list.setMinimumHeight(96)
@@ -178,6 +175,7 @@ class SamplePanel(QWidget):
         group_actions.addStretch(1)
         group_layout.addLayout(group_actions)
         self.group_notes_label = QLabel("Notes: —")
+        self.group_notes_label.setObjectName("panelInfoLabel")
         self.group_notes_label.setWordWrap(True)
         group_layout.addWidget(self.group_notes_label)
         group_box.setLayout(group_layout)
@@ -186,6 +184,7 @@ class SamplePanel(QWidget):
         sample_layout = QVBoxLayout()
         sample_layout.addWidget(self.sample_list)
         self.sample_details_label = QLabel("Sample details: —")
+        self.sample_details_label.setObjectName("panelInfoLabel")
         self.sample_details_label.setWordWrap(True)
         sample_layout.addWidget(self.sample_details_label)
         sample_actions = QHBoxLayout()
@@ -202,8 +201,10 @@ class SamplePanel(QWidget):
         gate_layout = QVBoxLayout()
         gate_layout.addWidget(self.gate_list)
         self.population_origin_label = QLabel("Origin: —")
+        self.population_origin_label.setObjectName("panelInfoLabel")
         self.population_origin_label.setWordWrap(True)
         self.population_children_label = QLabel("Subpopulations: —")
+        self.population_children_label.setObjectName("panelInfoLabel")
         self.population_children_label.setWordWrap(True)
         gate_layout.addWidget(self.population_origin_label)
         gate_layout.addWidget(self.population_children_label)
@@ -542,9 +543,6 @@ class InspectorPanel(QWidget):
     calculate_statistics_requested = Signal()
     export_statistics_requested = Signal()
     batch_export_statistics_requested = Signal()
-    universal_negative_changed = Signal(object)
-    assign_positive_population_requested = Signal()
-    assign_negative_population_requested = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -754,26 +752,6 @@ class InspectorPanel(QWidget):
         self.statistics_table.setMinimumHeight(100)
         self.statistics_table.horizontalHeader().setStretchLastSection(True)
 
-        self.compensation_sample_combo = QComboBox()
-        self.compensation_sample_combo.setEnabled(False)
-        self.universal_negative_combo = QComboBox()
-        self.universal_negative_combo.setEnabled(False)
-        self.compensation_status_label = QLabel("Configure compensation controls from the Compensation group.")
-        self.compensation_status_label.setWordWrap(True)
-        self.assign_positive_button = QPushButton("Use active gate as positive")
-        self.assign_positive_button.setProperty("variant", "primary")
-        self.assign_negative_button = QPushButton("Use active gate as negative")
-        self.assign_negative_button.setProperty("variant", "subtle")
-        self.compensation_table = QTableWidget(0, 7)
-        self.compensation_table.setHorizontalHeaderLabels(
-            ["Sample", "Type", "Fluorochrome", "Primary channel", "Positive", "Negative", "Status"]
-        )
-        self.compensation_table.verticalHeader().setVisible(False)
-        self.compensation_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.compensation_table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
-        self.compensation_table.setAlternatingRowColors(True)
-        self.compensation_table.horizontalHeader().setStretchLastSection(True)
-
         self.controls_tabs = QTabWidget()
         self.controls_tabs.addTab(view_scroll_area, "View")
 
@@ -817,53 +795,6 @@ class InspectorPanel(QWidget):
 
         self.controls_tabs.addTab(statistics_scroll_area, "Statistics")
 
-        compensation_box = QWidget()
-        compensation_layout = QVBoxLayout()
-        compensation_layout.setContentsMargins(0, 0, 0, 0)
-        compensation_layout.setSpacing(10)
-
-        compensation_status_box = QGroupBox("Compensation status")
-        compensation_status_layout = QVBoxLayout()
-        compensation_status_layout.setSpacing(8)
-        compensation_status_layout.addWidget(self.compensation_status_label)
-        compensation_status_box.setLayout(compensation_status_layout)
-
-        compensation_selection_box = QGroupBox("Assignment")
-        compensation_selection_form = QFormLayout()
-        compensation_selection_form.setHorizontalSpacing(10)
-        compensation_selection_form.setVerticalSpacing(8)
-        compensation_selection_form.addRow("Control sample:", self.compensation_sample_combo)
-        compensation_selection_form.addRow("Universal negative:", self.universal_negative_combo)
-        compensation_selection_box.setLayout(compensation_selection_form)
-
-        compensation_actions_box = QGroupBox("Actions")
-        compensation_actions_layout = QVBoxLayout()
-        compensation_actions_layout.setSpacing(8)
-        compensation_actions_layout.addWidget(self.assign_positive_button)
-        compensation_actions_layout.addWidget(self.assign_negative_button)
-        compensation_actions_layout.addStretch(1)
-        compensation_actions_box.setLayout(compensation_actions_layout)
-
-        compensation_top_row = QWidget()
-        compensation_top_layout = QHBoxLayout()
-        compensation_top_layout.setContentsMargins(0, 0, 0, 0)
-        compensation_top_layout.setSpacing(10)
-        compensation_top_layout.addWidget(compensation_selection_box, stretch=2)
-        compensation_top_layout.addWidget(compensation_actions_box, stretch=1)
-        compensation_top_row.setLayout(compensation_top_layout)
-
-        compensation_table_box = QGroupBox("Controls")
-        compensation_table_layout = QVBoxLayout()
-        compensation_table_layout.addWidget(self.compensation_table)
-        compensation_table_box.setLayout(compensation_table_layout)
-
-        compensation_layout.addWidget(compensation_status_box)
-        compensation_layout.addWidget(compensation_top_row)
-        compensation_layout.addWidget(compensation_table_box)
-        compensation_layout.addStretch(1)
-        compensation_box.setLayout(compensation_layout)
-
-        self.controls_tabs.addTab(compensation_box, "Compensation")
 
         layout = QVBoxLayout()
         layout.setContentsMargins(0, 0, 0, 0)
@@ -892,12 +823,8 @@ class InspectorPanel(QWidget):
         self.calculate_statistics_button.clicked.connect(self.calculate_statistics_requested.emit)
         self.export_statistics_button.clicked.connect(self.export_statistics_requested.emit)
         self.batch_export_statistics_button.clicked.connect(self.batch_export_statistics_requested.emit)
-        self.universal_negative_combo.currentIndexChanged.connect(self._emit_universal_negative_changed)
-        self.assign_positive_button.clicked.connect(self.assign_positive_population_requested.emit)
-        self.assign_negative_button.clicked.connect(self.assign_negative_population_requested.emit)
         self.set_plot_mode("scatter")
         self.clear_statistics()
-        self.clear_compensation_setup()
 
     def set_file_info(
         self,
@@ -1025,73 +952,6 @@ class InspectorPanel(QWidget):
         self.statistics_table.setRowCount(0)
         self.export_statistics_button.setEnabled(False)
 
-    def set_compensation_samples(
-        self,
-        sample_options: list[tuple[str, int]],
-        *,
-        selected_sample_index: int | None = None,
-    ) -> None:
-        with QSignalBlocker(self.compensation_sample_combo):
-            self.compensation_sample_combo.clear()
-            for label, sample_index in sample_options:
-                self.compensation_sample_combo.addItem(label, sample_index)
-            has_options = len(sample_options) > 0
-            self.compensation_sample_combo.setEnabled(has_options)
-            self.assign_positive_button.setEnabled(has_options)
-            self.assign_negative_button.setEnabled(has_options)
-            if not has_options:
-                return
-            selected_index = 0
-            for combo_index in range(self.compensation_sample_combo.count()):
-                if self.compensation_sample_combo.itemData(combo_index) == selected_sample_index:
-                    selected_index = combo_index
-                    break
-            self.compensation_sample_combo.setCurrentIndex(selected_index)
-
-    def current_compensation_sample_index(self) -> int | None:
-        data = self.compensation_sample_combo.currentData()
-        return int(data) if data is not None else None
-
-    def set_universal_negative_samples(
-        self,
-        sample_options: list[tuple[str, int | None]],
-        *,
-        selected_sample_index: int | None = None,
-    ) -> None:
-        with QSignalBlocker(self.universal_negative_combo):
-            self.universal_negative_combo.clear()
-            for label, sample_index in sample_options:
-                self.universal_negative_combo.addItem(label, sample_index)
-            has_options = len(sample_options) > 0
-            self.universal_negative_combo.setEnabled(has_options)
-            if not has_options:
-                return
-            selected_index = 0
-            for combo_index in range(self.universal_negative_combo.count()):
-                if self.universal_negative_combo.itemData(combo_index) == selected_sample_index:
-                    selected_index = combo_index
-                    break
-            self.universal_negative_combo.setCurrentIndex(selected_index)
-
-    def set_compensation_rows(self, rows: list[tuple[str, ...]]) -> None:
-        self.compensation_table.setRowCount(len(rows))
-        for row_index, row_values in enumerate(rows):
-            for column_index, value in enumerate(row_values):
-                self.compensation_table.setItem(row_index, column_index, QTableWidgetItem(value))
-
-    def set_compensation_status(self, text: str) -> None:
-        self.compensation_status_label.setText(text)
-
-    def clear_compensation_setup(self) -> None:
-        with QSignalBlocker(self.compensation_sample_combo), QSignalBlocker(self.universal_negative_combo):
-            self.compensation_sample_combo.clear()
-            self.universal_negative_combo.clear()
-        self.compensation_sample_combo.setEnabled(False)
-        self.universal_negative_combo.setEnabled(False)
-        self.assign_positive_button.setEnabled(False)
-        self.assign_negative_button.setEnabled(False)
-        self.compensation_table.setRowCount(0)
-        self.compensation_status_label.setText("Configure compensation controls from the Compensation group.")
 
     def current_axes(self) -> tuple[int, int]:
         return self.x_axis_combo.currentIndex(), self.y_axis_combo.currentIndex()
@@ -1176,9 +1036,6 @@ class InspectorPanel(QWidget):
     def _emit_auto_range_requested(self, *args: object) -> None:
         del args
         self.auto_range_requested.emit()
-
-    def _emit_universal_negative_changed(self) -> None:
-        self.universal_negative_changed.emit(self.universal_negative_combo.currentData())
 
     @staticmethod
     def _parse_optional_float(text: str) -> float | None:

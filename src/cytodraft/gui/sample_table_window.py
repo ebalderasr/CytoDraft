@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QColorDialog,
     QDialog,
     QFileDialog,
+    QFrame,
     QGridLayout,
     QHBoxLayout,
     QHeaderView,
@@ -151,79 +152,52 @@ class SampleTableWindow(QDialog):
         self._build_ui()
         self.refresh()
 
+    @staticmethod
+    def _vline() -> QFrame:
+        """Thin vertical separator for the action bar."""
+        sep = QFrame()
+        sep.setFrameShape(QFrame.VLine)
+        sep.setFrameShadow(QFrame.Plain)
+        sep.setFixedWidth(1)
+        sep.setStyleSheet("background: #d4dde7; border: none;")
+        sep.setContentsMargins(0, 4, 0, 4)
+        return sep
+
     def _build_ui(self) -> None:
-        filter_row = QHBoxLayout()
-        filter_row.setSpacing(6)
-        filter_row.setContentsMargins(0, 0, 0, 0)
-
-        filter_row.addWidget(QLabel("Filter:"))
-        self._group_combo = QComboBox()
-        self._group_combo.setMinimumWidth(160)
-        self._group_combo.currentIndexChanged.connect(self._rebuild_table)
-        filter_row.addWidget(self._group_combo)
-
-        filter_row.addWidget(QLabel("Show:"))
-
-        self._toggle_gates_btn = QPushButton("Gate summary")
-        self._toggle_gates_btn.setCheckable(True)
-        self._toggle_gates_btn.setChecked(True)
-        self._toggle_gates_btn.setProperty("variant", "subtle")
-        self._toggle_gates_btn.toggled.connect(self._on_toggle_gate_summary)
-
-        self._toggle_stats_btn = QPushButton("Statistics")
-        self._toggle_stats_btn.setCheckable(True)
-        self._toggle_stats_btn.setChecked(True)
-        self._toggle_stats_btn.setProperty("variant", "subtle")
-        self._toggle_stats_btn.toggled.connect(self._on_toggle_statistics)
-
-        self._toggle_keywords_btn = QPushButton("Keywords")
-        self._toggle_keywords_btn.setCheckable(True)
-        self._toggle_keywords_btn.setChecked(True)
-        self._toggle_keywords_btn.setProperty("variant", "subtle")
-        self._toggle_keywords_btn.toggled.connect(self._on_toggle_keywords)
-
-        for button in (
-            self._toggle_gates_btn,
-            self._toggle_stats_btn,
-            self._toggle_keywords_btn,
-        ):
-            filter_row.addWidget(button)
-
-        filter_row.addStretch(1)
-
+        # ── Action row (modifies data) ──────────────────────────────────────
         action_row = QHBoxLayout()
-        action_row.setSpacing(6)
+        action_row.setSpacing(5)
         action_row.setContentsMargins(0, 0, 0, 0)
 
-        self._add_samples_btn = QPushButton("Add samples...")
+        self._add_samples_btn = QPushButton("Add samples")
         self._add_samples_btn.setProperty("variant", "primary")
         self._add_samples_btn.clicked.connect(self._on_add_samples)
 
-        self._add_kw_btn = QPushButton("+ Add keyword")
+        self._add_kw_btn = QPushButton("+ Keyword")
         self._add_kw_btn.setProperty("variant", "subtle")
+        self._add_kw_btn.setToolTip("Add a custom keyword column")
         self._add_kw_btn.clicked.connect(self._on_add_keyword)
 
-        self._remove_kw_btn = QPushButton("Remove keyword")
+        self._remove_kw_btn = QPushButton("− Keyword")
         self._remove_kw_btn.setProperty("variant", "danger")
+        self._remove_kw_btn.setToolTip("Remove a keyword column")
         self._remove_kw_btn.clicked.connect(self._on_remove_keyword)
 
-        self._refresh_btn = QPushButton("Refresh")
-        self._refresh_btn.setProperty("variant", "subtle")
-        self._refresh_btn.clicked.connect(self.refresh)
-
-        self._statistics_btn = QPushButton("Statistics...")
+        self._statistics_btn = QPushButton("+ Statistic")
         self._statistics_btn.setProperty("variant", "subtle")
+        self._statistics_btn.setToolTip("Add a statistics column")
         self._statistics_btn.clicked.connect(self._on_add_statistics)
 
-        self._remove_stat_btn = QPushButton("Remove statistic")
+        self._remove_stat_btn = QPushButton("− Statistic")
         self._remove_stat_btn.setProperty("variant", "danger")
+        self._remove_stat_btn.setToolTip("Remove a statistics column")
         self._remove_stat_btn.clicked.connect(self._on_remove_statistics)
 
         self._move_group_btn = QPushButton("Move to group")
         self._move_group_btn.setProperty("variant", "subtle")
         self._move_group_btn.clicked.connect(self._on_move_selected_samples_to_group)
 
-        self._delete_samples_btn = QPushButton("Delete selected")
+        self._delete_samples_btn = QPushButton("Delete samples")
         self._delete_samples_btn.setProperty("variant", "danger")
         self._delete_samples_btn.clicked.connect(self._on_delete_selected_samples)
 
@@ -231,20 +205,65 @@ class SampleTableWindow(QDialog):
         self._export_btn.setProperty("variant", "primary")
         self._export_btn.clicked.connect(self._on_export_csv)
 
-        for button in (
-            self._add_samples_btn,
-            self._add_kw_btn,
-            self._remove_kw_btn,
-            self._statistics_btn,
-            self._remove_stat_btn,
-            self._move_group_btn,
-            self._delete_samples_btn,
-            self._refresh_btn,
-            self._export_btn,
-        ):
-            action_row.addWidget(button)
+        self._refresh_btn = QPushButton("↻")
+        self._refresh_btn.setProperty("variant", "subtle")
+        self._refresh_btn.setToolTip("Refresh table")
+        self._refresh_btn.setFixedWidth(34)
+        self._refresh_btn.clicked.connect(self.refresh)
 
+        action_row.addWidget(self._add_samples_btn)
+        action_row.addWidget(self._vline())
+        action_row.addWidget(self._add_kw_btn)
+        action_row.addWidget(self._remove_kw_btn)
+        action_row.addWidget(self._vline())
+        action_row.addWidget(self._statistics_btn)
+        action_row.addWidget(self._remove_stat_btn)
+        action_row.addWidget(self._vline())
+        action_row.addWidget(self._move_group_btn)
+        action_row.addWidget(self._delete_samples_btn)
         action_row.addStretch(1)
+        action_row.addWidget(self._refresh_btn)
+        action_row.addWidget(self._export_btn)
+
+        # ── Filter row (display options) ────────────────────────────────────
+        filter_row = QHBoxLayout()
+        filter_row.setSpacing(6)
+        filter_row.setContentsMargins(0, 0, 0, 0)
+
+        filter_label = QLabel("Group:")
+        filter_label.setStyleSheet("color: #536274; font-weight: 600; font-size: 12px;")
+        self._group_combo = QComboBox()
+        self._group_combo.setMinimumWidth(160)
+        self._group_combo.currentIndexChanged.connect(self._rebuild_table)
+
+        show_label = QLabel("Show:")
+        show_label.setStyleSheet("color: #536274; font-weight: 600; font-size: 12px; margin-left: 8px;")
+
+        self._toggle_gates_btn = QPushButton("Gates")
+        self._toggle_gates_btn.setCheckable(True)
+        self._toggle_gates_btn.setChecked(True)
+        self._toggle_gates_btn.setProperty("variant", "chip")
+        self._toggle_gates_btn.toggled.connect(self._on_toggle_gate_summary)
+
+        self._toggle_stats_btn = QPushButton("Statistics")
+        self._toggle_stats_btn.setCheckable(True)
+        self._toggle_stats_btn.setChecked(True)
+        self._toggle_stats_btn.setProperty("variant", "chip")
+        self._toggle_stats_btn.toggled.connect(self._on_toggle_statistics)
+
+        self._toggle_keywords_btn = QPushButton("Keywords")
+        self._toggle_keywords_btn.setCheckable(True)
+        self._toggle_keywords_btn.setChecked(True)
+        self._toggle_keywords_btn.setProperty("variant", "chip")
+        self._toggle_keywords_btn.toggled.connect(self._on_toggle_keywords)
+
+        filter_row.addWidget(filter_label)
+        filter_row.addWidget(self._group_combo)
+        filter_row.addWidget(show_label)
+        filter_row.addWidget(self._toggle_gates_btn)
+        filter_row.addWidget(self._toggle_stats_btn)
+        filter_row.addWidget(self._toggle_keywords_btn)
+        filter_row.addStretch(1)
 
         helper_row = QHBoxLayout()
         helper_row.setSpacing(8)
@@ -385,8 +404,8 @@ class SampleTableWindow(QDialog):
         top_layout = QVBoxLayout()
         top_layout.setContentsMargins(0, 0, 0, 0)
         top_layout.setSpacing(4)
-        top_layout.addLayout(filter_row)
         top_layout.addLayout(action_row)
+        top_layout.addLayout(filter_row)
         top_layout.addLayout(helper_row)
         top_panel.setLayout(top_layout)
 

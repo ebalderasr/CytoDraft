@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
+from pathlib import Path
 from PySide6.QtCore import QSignalBlocker, Qt
 from PySide6.QtGui import QAction, QColor, QDragEnterEvent, QDropEvent
 from PySide6.QtWidgets import (
@@ -35,6 +36,7 @@ from cytodraft.core.statistics import (
 )
 from cytodraft.core.transforms import apply_scale, axis_label
 from cytodraft.gui.batch_export_dialog import BatchExportDialog
+from cytodraft.gui.compensation_dialog import CompensationWindow
 from cytodraft.gui.gate_toolbar import GateToolbar
 from cytodraft.gui.panels import InspectorPanel, SamplePanel
 from cytodraft.gui.sample_table_window import SampleTableWindow
@@ -52,6 +54,7 @@ from cytodraft.models.gate import (
     RectangleGate,
 )
 from cytodraft.models.sample import SampleData
+from cytodraft.core.workspace_io import WORKSPACE_EXTENSION, load_workspace, save_workspace
 from cytodraft.models.workspace import (
     DEFAULT_GROUP_NAME,
     WorkspaceSample,
@@ -84,12 +87,14 @@ class MainWindow(QMainWindow):
         self._latest_statistics: list[StatisticResult] = []
         self._latest_statistics_population_name = ""
         self._latest_statistics_channel_name = ""
+        self._workspace_path: Path | None = None
 
         self.sample_panel = SamplePanel()
         self.plot_panel = CytometryPlotWidget()
         self.gate_toolbar = GateToolbar()
         self.inspector_panel = InspectorPanel()
         self._sample_table_window: SampleTableWindow | None = None
+        self._compensation_window: CompensationWindow | None = None
 
         self._build_ui()
         self._connect_signals()
@@ -132,6 +137,16 @@ class MainWindow(QMainWindow):
         self.open_action = QAction("Open FCS...", self)
         self.open_action.setShortcut("Ctrl+O")
 
+        self.open_workspace_action = QAction("Open Workspace...", self)
+        self.open_workspace_action.setShortcut("Ctrl+W")
+
+        self.save_workspace_action = QAction("Save Workspace", self)
+        self.save_workspace_action.setShortcut("Ctrl+S")
+        self.save_workspace_action.setEnabled(False)
+
+        self.save_workspace_as_action = QAction("Save Workspace As...", self)
+        self.save_workspace_as_action.setShortcut("Ctrl+Shift+S")
+
         self.export_gate_action = QAction("Export active gate...", self)
         self.export_gate_action.setShortcut("Ctrl+E")
 
@@ -139,6 +154,11 @@ class MainWindow(QMainWindow):
         self.exit_action.setShortcut("Ctrl+Q")
 
         file_menu.addAction(self.open_action)
+        file_menu.addAction(self.open_workspace_action)
+        file_menu.addSeparator()
+        file_menu.addAction(self.save_workspace_action)
+        file_menu.addAction(self.save_workspace_as_action)
+        file_menu.addSeparator()
         file_menu.addAction(self.export_gate_action)
         file_menu.addSeparator()
         file_menu.addAction(self.exit_action)
@@ -148,6 +168,13 @@ class MainWindow(QMainWindow):
         self.sample_table_action.setShortcut("Ctrl+T")
         self.sample_table_action.setToolTip("Open sample manager for samples, groups, and statistics")
         view_menu.addAction(self.sample_table_action)
+
+        self.compensation_editor_action = QAction("Compensation...", self)
+        self.compensation_editor_action.setShortcut("Ctrl+M")
+        self.compensation_editor_action.setToolTip(
+            "Manage compensation controls, edit the spillover matrix and verify visually"
+        )
+        view_menu.addAction(self.compensation_editor_action)
 
         help_menu = menu_bar.addMenu("&Help")
         self.about_action = QAction("About CytoDraft", self)
@@ -160,6 +187,7 @@ class MainWindow(QMainWindow):
         toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
 
         toolbar.addAction(self.sample_table_action)
+        toolbar.addAction(self.compensation_editor_action)
 
     def _move_statistics_to_sample_manager(self) -> None:
         for tab_index in range(self.inspector_panel.controls_tabs.count()):
@@ -169,10 +197,14 @@ class MainWindow(QMainWindow):
 
     def _connect_signals(self) -> None:
         self.open_action.triggered.connect(self.open_fcs_dialog)
+        self.open_workspace_action.triggered.connect(self.open_workspace_dialog)
+        self.save_workspace_action.triggered.connect(self.save_workspace_dialog)
+        self.save_workspace_as_action.triggered.connect(self.save_workspace_as_dialog)
         self.export_gate_action.triggered.connect(self.on_export_active_gate)
         self.exit_action.triggered.connect(self.close)
         self.about_action.triggered.connect(self.show_about_dialog)
         self.sample_table_action.triggered.connect(self.open_sample_table)
+        self.compensation_editor_action.triggered.connect(self.open_compensation_editor)
         self.sample_panel.add_sample_button.clicked.connect(self.open_fcs_dialog)
         self.sample_panel.remove_sample_button.clicked.connect(self.remove_selected_sample)
         self.sample_panel.create_group_requested.connect(self.on_create_group)
@@ -209,13 +241,7 @@ class MainWindow(QMainWindow):
         self.inspector_panel.calculate_statistics_requested.connect(self.on_calculate_statistics)
         self.inspector_panel.export_statistics_requested.connect(self.on_export_statistics)
         self.inspector_panel.batch_export_statistics_requested.connect(self.on_batch_export_statistics)
-        self.inspector_panel.universal_negative_changed.connect(self.on_universal_negative_changed)
-        self.inspector_panel.assign_positive_population_requested.connect(
-            self.on_assign_active_gate_as_compensation_positive
-        )
-        self.inspector_panel.assign_negative_population_requested.connect(
-            self.on_assign_active_gate_as_compensation_negative
-        )
+
 
     # ------------------------------------------------------------------
     # Sample Table window
@@ -238,6 +264,28 @@ class MainWindow(QMainWindow):
         self._sample_table_window.raise_()
         self._sample_table_window.activateWindow()
 
+    def open_compensation_editor(self) -> None:
+        """Open (or bring to front) the Compensation Manager window."""
+        if self._compensation_window is None or not self._compensation_window.isVisible():
+            self._compensation_window = CompensationWindow(
+                self.workspace,
+                on_workspace_changed=self._on_compensation_workspace_changed,
+                parent=self,
+            )
+            self._compensation_window.add_fcs_to_group_requested.connect(
+                self.open_fcs_dialog_for_group
+            )
+        else:
+            self._compensation_window.refresh()
+        self._compensation_window.show()
+        self._compensation_window.raise_()
+        self._compensation_window.activateWindow()
+
+    def _on_compensation_workspace_changed(self) -> None:
+        self._sync_from_workspace()
+        self._refresh_sample_list(select_active=True)
+        self._refresh_sample_details()
+
     def _refresh_sample_table(self) -> None:
         """Refresh the Sample Table window if it is open."""
         if self._sample_table_window is not None and self._sample_table_window.isVisible():
@@ -248,7 +296,6 @@ class MainWindow(QMainWindow):
         self._clear_statistics_results()
         self._refresh_group_list()
         self._refresh_sample_list(select_active=True)
-        self._refresh_compensation_setup()
         if self.current_sample is None:
             self.selected_group_name = None
             self.gates = []
@@ -324,7 +371,6 @@ class MainWindow(QMainWindow):
         self._clear_statistics_results()
         self._refresh_group_list()
         self._refresh_sample_list(select_active=True)
-        self._refresh_compensation_setup()
         self._refresh_gate_panel()
         self._show_active_sample()
         self._refresh_sample_table()
@@ -402,7 +448,6 @@ class MainWindow(QMainWindow):
                         self.sample_panel.sample_list.setCurrentRow(row)
                         break
         self.sample_panel.remove_sample_button.setEnabled(active_index is not None)
-        self._refresh_compensation_setup()
 
     def _refresh_group_list(self) -> None:
         current_group_name = self.selected_group_name
@@ -429,70 +474,6 @@ class MainWindow(QMainWindow):
         if sample_index < 0 or sample_index >= len(self.workspace.samples):
             return population_name
         return f"{self.workspace.samples[sample_index].sample.file_name}: {population_name}"
-
-    def _refresh_compensation_setup(self) -> None:
-        compensation_samples = self.workspace.compensation_samples()
-        if not compensation_samples:
-            self.inspector_panel.clear_compensation_setup()
-            return
-
-        sample_options = [
-            (workspace_sample.sample.file_name, workspace_index)
-            for workspace_index, workspace_sample in compensation_samples
-        ]
-        selected_sample_index = self.inspector_panel.current_compensation_sample_index()
-        if selected_sample_index is None or not any(idx == selected_sample_index for _, idx in sample_options):
-            selected_sample_index = compensation_samples[0][0]
-        self.inspector_panel.set_compensation_samples(
-            sample_options,
-            selected_sample_index=selected_sample_index,
-        )
-
-        universal_negative_options: list[tuple[str, int | None]] = [("None", None)] + sample_options
-        self.inspector_panel.set_universal_negative_samples(
-            universal_negative_options,
-            selected_sample_index=self.workspace.universal_negative_sample_index,
-        )
-
-        rows: list[tuple[str, ...]] = []
-        configured_count = 0
-        for workspace_index, workspace_sample in compensation_samples:
-            positive_label = self._population_selection_label(
-                workspace_sample.compensation_positive.sample_index,
-                workspace_sample.compensation_positive.population_name,
-            )
-            negative_sample_index = (
-                workspace_sample.compensation_negative.sample_index
-                if workspace_sample.use_universal_negative
-                else workspace_index
-            )
-            negative_label = self._population_selection_label(
-                negative_sample_index,
-                workspace_sample.compensation_negative.population_name,
-            )
-            status_parts: list[str] = []
-            if workspace_sample.compensation_positive.is_configured:
-                status_parts.append("positive")
-            if workspace_sample.compensation_negative.population_name:
-                status_parts.append("negative")
-            status = " / ".join(status_parts) if status_parts else "pending"
-            if workspace_sample.compensation_positive.is_configured and workspace_sample.compensation_negative.population_name:
-                configured_count += 1
-            rows.append(
-                (
-                    workspace_sample.sample.file_name,
-                    workspace_sample.compensation.control_type.replace("_", " ").title(),
-                    workspace_sample.compensation.fluorochrome or "—",
-                    workspace_sample.compensation.target_channel or "—",
-                    positive_label,
-                    negative_label,
-                    status,
-                )
-            )
-        self.inspector_panel.set_compensation_rows(rows)
-        self.inspector_panel.set_compensation_status(
-            f"{configured_count}/{len(compensation_samples)} controls have positive and negative populations assigned."
-        )
 
     def _refresh_sample_details(self) -> None:
         sample_index = self.sample_panel.current_sample_workspace_index()
@@ -793,72 +774,6 @@ class MainWindow(QMainWindow):
         self._refresh_sample_list(select_active=True)
         self._refresh_sample_details()
 
-    def on_universal_negative_changed(self, sample_index: object) -> None:
-        if sample_index is None:
-            self.workspace.universal_negative_sample_index = None
-        else:
-            self.workspace.universal_negative_sample_index = int(sample_index)
-        self._refresh_compensation_setup()
-
-    def on_assign_active_gate_as_compensation_positive(self) -> None:
-        compensation_sample_index = self.inspector_panel.current_compensation_sample_index()
-        if compensation_sample_index is None:
-            self.statusBar().showMessage("Select a compensation sample first", 4000)
-            return
-        if self.active_gate is None:
-            self.statusBar().showMessage("Select a gate to assign as positive population", 4000)
-            return
-        if self.workspace.active_sample_index != compensation_sample_index:
-            self.statusBar().showMessage(
-                "Open the selected compensation sample and choose its positive gate",
-                5000,
-            )
-            return
-        workspace_sample = self.workspace.samples[compensation_sample_index]
-        workspace_sample.compensation_positive.sample_index = compensation_sample_index
-        workspace_sample.compensation_positive.population_name = self.active_gate.name
-        self._refresh_compensation_setup()
-        self.statusBar().showMessage(
-            f"Assigned {self.active_gate.name} as positive population for {workspace_sample.sample.file_name}",
-            5000,
-        )
-
-    def on_assign_active_gate_as_compensation_negative(self) -> None:
-        compensation_sample_index = self.inspector_panel.current_compensation_sample_index()
-        if compensation_sample_index is None:
-            self.statusBar().showMessage("Select a compensation sample first", 4000)
-            return
-        if self.active_gate is None:
-            self.statusBar().showMessage("Select a gate to assign as negative population", 4000)
-            return
-
-        workspace_sample = self.workspace.samples[compensation_sample_index]
-        active_sample_index = self.workspace.active_sample_index
-        if active_sample_index is None:
-            self.statusBar().showMessage("Open a sample before assigning the negative population", 4000)
-            return
-
-        if active_sample_index == compensation_sample_index:
-            negative_sample_index = compensation_sample_index
-            workspace_sample.use_universal_negative = False
-        elif self.workspace.universal_negative_sample_index is not None and active_sample_index == self.workspace.universal_negative_sample_index:
-            negative_sample_index = self.workspace.universal_negative_sample_index
-            workspace_sample.use_universal_negative = True
-        else:
-            self.statusBar().showMessage(
-                "Negative gate must come from the control sample or the configured universal negative sample",
-                6000,
-            )
-            return
-
-        workspace_sample.compensation_negative.sample_index = negative_sample_index
-        workspace_sample.compensation_negative.population_name = self.active_gate.name
-        self._refresh_compensation_setup()
-        self.statusBar().showMessage(
-            f"Assigned {self.active_gate.name} as negative population for {workspace_sample.sample.file_name}",
-            5000,
-        )
-
     def on_rename_group(self, group_name: str) -> None:
         group = self.workspace.groups.get(group_name)
         if group is None:
@@ -959,16 +874,8 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"Updated annotations for {group.name}", 4000)
 
     def on_edit_compensation_sample(self, sample_index: int) -> None:
-        if sample_index < 0 or sample_index >= len(self.workspace.samples):
-            return
-
-        workspace_sample = self.workspace.samples[sample_index]
-        if workspace_sample.group_name != COMPENSATION_GROUP_NAME:
-            self.statusBar().showMessage(
-                "Compensation details are only available for samples in the Compensation group",
-                5000,
-            )
-            return
+        """Open the Compensation Manager when the user right-clicks a compensation sample."""
+        self.open_compensation_editor()
 
     def on_edit_sample(self, sample_index: int) -> None:
         if sample_index < 0 or sample_index >= len(self.workspace.samples):
@@ -1021,72 +928,6 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(
             f'Added keyword "{normalized_name}" to {self.workspace.samples[sample_index].sample_name}',
             4000,
-        )
-
-        control_options = [
-            "Single stain",
-            "Unstained",
-            "Autofluorescence",
-            "FMO",
-            "Beads",
-        ]
-        current_control_label = workspace_sample.compensation.control_type.replace("_", " ").title()
-        if current_control_label not in control_options:
-            control_options.append(current_control_label)
-        selected_control, accepted = QInputDialog.getItem(
-            self,
-            "Compensation control type",
-            "Control type:",
-            control_options,
-            current=control_options.index(current_control_label),
-            editable=False,
-        )
-        if not accepted:
-            return
-
-        fluorochrome, accepted = QInputDialog.getText(
-            self,
-            "Compensation fluorochrome",
-            "Fluorochrome:",
-            text=workspace_sample.compensation.fluorochrome,
-        )
-        if not accepted:
-            return
-
-        channel_names = [channel.display_name for channel in workspace_sample.sample.channels]
-        if workspace_sample.compensation.target_channel and workspace_sample.compensation.target_channel not in channel_names:
-            channel_names.append(workspace_sample.compensation.target_channel)
-        selected_channel, accepted = QInputDialog.getItem(
-            self,
-            "Compensation target channel",
-            "Target channel:",
-            channel_names,
-            current=channel_names.index(workspace_sample.compensation.target_channel)
-            if workspace_sample.compensation.target_channel in channel_names
-            else 0,
-            editable=False,
-        )
-        if not accepted:
-            return
-
-        notes, accepted = QInputDialog.getMultiLineText(
-            self,
-            "Compensation notes",
-            "Notes:",
-            text=workspace_sample.compensation.notes,
-        )
-        if not accepted:
-            return
-
-        workspace_sample.compensation.control_type = selected_control.lower().replace(" ", "_")
-        workspace_sample.compensation.fluorochrome = fluorochrome.strip()
-        workspace_sample.compensation.target_channel = selected_channel.strip()
-        workspace_sample.compensation.notes = notes.strip()
-        self._refresh_sample_list(select_active=True)
-        self._refresh_sample_details()
-        self.statusBar().showMessage(
-            f"Updated compensation metadata for {workspace_sample.sample.file_name}",
-            5000,
         )
 
     def redraw_current_plot(self, *, show_status: bool = True) -> None:
@@ -1733,7 +1574,6 @@ class MainWindow(QMainWindow):
         self._refresh_statistics_population_options()
         self.sample_panel.add_gate(self._gate_list_label(gate), select=False)
         self._refresh_gate_list_labels()
-        self._refresh_compensation_setup()
         new_row = len(self.gates)
         self.sample_panel.select_gate_row(new_row)
         self._refresh_sample_table()
@@ -1768,7 +1608,6 @@ class MainWindow(QMainWindow):
         self._clear_statistics_results()
         self._refresh_statistics_population_options()
         self._update_population_context_labels()
-        self._refresh_compensation_setup()
         self.redraw_current_plot(show_status=False)
         self.statusBar().showMessage(f"Renamed gate to {self.active_gate.name}", 4000)
 
@@ -1854,7 +1693,6 @@ class MainWindow(QMainWindow):
         self.inspector_panel.set_active_gate("All events")
         self._refresh_statistics_population_options()
         self._update_population_context_labels()
-        self._refresh_compensation_setup()
         self.redraw_current_plot(show_status=False)
         if len(names_to_delete) == 1:
             self.statusBar().showMessage(f"Deleted {gate.name}", 4000)
@@ -2264,6 +2102,132 @@ class MainWindow(QMainWindow):
 
     def _delete_gate_subtree(self, gates: list[GateModel], root_name: str) -> None:
         self.gate_service.delete_gate_subtree(gates, root_name)
+
+    # ------------------------------------------------------------------
+    # Workspace save / load
+    # ------------------------------------------------------------------
+
+    def open_workspace_dialog(self) -> None:
+        """Open a .cytodraft workspace file."""
+        path_str, _ = QFileDialog.getOpenFileName(
+            self,
+            "Open Workspace",
+            "",
+            f"CytoDraft Workspace (*{WORKSPACE_EXTENSION});;All files (*)",
+        )
+        if not path_str:
+            return
+        self._load_workspace_from_path(Path(path_str))
+
+    def _load_workspace_from_path(self, path: Path) -> None:
+        self.statusBar().showMessage(f"Loading workspace: {path.name}\u2026")
+        try:
+            workspace, warnings = load_workspace(
+                path,
+                missing_file_handler=self._handle_missing_fcs_file,
+            )
+        except Exception as exc:
+            QMessageBox.critical(self, "Cannot open workspace", str(exc))
+            self.statusBar().showMessage("Failed to open workspace", 5000)
+            return
+
+        self._apply_loaded_workspace(workspace, path)
+
+        if warnings:
+            QMessageBox.warning(
+                self,
+                "Workspace loaded with warnings",
+                "The workspace was loaded, but some issues were encountered:\n\n"
+                + "\n".join(f"\u2022 {w}" for w in warnings),
+            )
+        self.statusBar().showMessage(f"Opened workspace: {path.name}", 6000)
+
+    def _apply_loaded_workspace(self, workspace: WorkspaceState, path: Path) -> None:
+        """Replace the current workspace and refresh all UI."""
+        self.workspace = workspace
+        self._workspace_path = path
+        self.current_sample = None
+        self.gates = []
+        self.active_gate = None
+        self._latest_statistics = []
+        self._latest_statistics_population_name = ""
+        self._latest_statistics_channel_name = ""
+        self.selected_group_name = None
+
+        if self._sample_table_window is not None:
+            self._sample_table_window.close()
+            self._sample_table_window = None
+
+        self._sync_from_workspace()
+        self._refresh_group_list()
+        self._refresh_sample_list(select_active=True)
+        self._refresh_gate_panel()
+        self._show_active_sample()
+        self.save_workspace_action.setEnabled(True)
+        self._update_window_title()
+
+    def save_workspace_dialog(self) -> None:
+        """Save to the current workspace file, or prompt for a path."""
+        if self._workspace_path is None:
+            self.save_workspace_as_dialog()
+            return
+        self._save_workspace_to_path(self._workspace_path)
+
+    def save_workspace_as_dialog(self) -> None:
+        """Prompt the user for a save path and save the workspace."""
+        default_name = (
+            self._workspace_path.stem if self._workspace_path else "experiment"
+        )
+        path_str, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save Workspace As",
+            default_name + WORKSPACE_EXTENSION,
+            f"CytoDraft Workspace (*{WORKSPACE_EXTENSION});;All files (*)",
+        )
+        if not path_str:
+            return
+        path = Path(path_str)
+        if path.suffix != WORKSPACE_EXTENSION:
+            path = path.with_suffix(WORKSPACE_EXTENSION)
+        self._save_workspace_to_path(path)
+
+    def _save_workspace_to_path(self, path: Path) -> None:
+        try:
+            save_workspace(self.workspace, path)
+        except Exception as exc:
+            QMessageBox.critical(self, "Cannot save workspace", str(exc))
+            self.statusBar().showMessage("Save failed", 5000)
+            return
+        self._workspace_path = path
+        self.save_workspace_action.setEnabled(True)
+        self._update_window_title()
+        self.statusBar().showMessage(f"Saved: {path.name}", 5000)
+
+    def _update_window_title(self) -> None:
+        if self._workspace_path is not None:
+            self.setWindowTitle(f"CytoDraft \u2014 {self._workspace_path.stem}")
+        else:
+            self.setWindowTitle("CytoDraft")
+
+    def _handle_missing_fcs_file(self, original_path: str) -> Path | None:
+        """Called when a referenced FCS file is not found during workspace load."""
+        answer = QMessageBox.question(
+            self,
+            "File not found",
+            f"The following FCS file could not be found:\n\n{original_path}\n\n"
+            "Would you like to locate it manually?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes,
+        )
+        if answer != QMessageBox.Yes:
+            return None
+        path_str, _ = QFileDialog.getOpenFileName(
+            self,
+            "Locate FCS file",
+            "",
+            "FCS files (*.fcs);;All files (*)",
+        )
+        return Path(path_str) if path_str else None
 
     def show_about_dialog(self) -> None:
         QMessageBox.about(

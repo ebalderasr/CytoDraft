@@ -7,14 +7,44 @@ import pyqtgraph as pg
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QSizePolicy, QVBoxLayout, QWidget
 
-ROI_BORDER_COLOR = "#0f766e"
-ROI_HOVER_COLOR = "#f59e0b"
-ROI_HANDLE_COLOR = "#374151"
-ROI_HANDLE_HOVER_COLOR = "#111827"
-ROI_HANDLE_SIZE = 13
-POLYGON_HANDLE_SIZE = 23
-CIRCLE_HANDLE_SIZE = 23
-ROI_HANDLE_PEN_WIDTH = 3
+ROI_BORDER_COLOR = "#0f766e"        # Teal — ROI outline
+ROI_HOVER_COLOR = "#f59e0b"         # Amber — ROI outline on hover
+ROI_HANDLE_FILL = "#374151"         # Solid dark-slate fill for all handles
+ROI_HANDLE_BORDER = "#111827"       # Handle outline (very dark for contrast)
+ROI_HANDLE_HOVER_BORDER = "#f59e0b" # Amber — handle outline on hover
+HANDLE_SIZE = 12                    # Unified handle radius (screen px) for all gate types
+ROI_HANDLE_PEN_WIDTH = 2
+
+
+def _apply_handle_style(handle_item) -> None:
+    """Apply unified solid appearance to one pyqtgraph ROI handle."""
+    handle_item.pen = pg.mkPen(ROI_HANDLE_BORDER, width=ROI_HANDLE_PEN_WIDTH)
+    handle_item.hoverPen = pg.mkPen(ROI_HANDLE_HOVER_BORDER, width=ROI_HANDLE_PEN_WIDTH + 1)
+    handle_item.currentPen = handle_item.pen
+    handle_item.brush = pg.mkBrush(ROI_HANDLE_FILL)
+    handle_item.radius = HANDLE_SIZE
+    handle_item.update()
+
+
+def _style_roi_handles(roi: pg.ROI) -> None:
+    """Apply uniform solid styling to every handle currently on *roi*."""
+    for h in roi.handles:
+        _apply_handle_style(h["item"])
+
+
+class _GatePolyLineROI(pg.PolyLineROI):
+    """PolyLineROI that re-applies uniform handle styling whenever a vertex
+    is added — including vertices inserted interactively by the user clicking
+    on a segment edge."""
+
+    def addFreeHandle(self, pos, *args, **kwargs):  # noqa: N802
+        # Fix handleSize BEFORE super() creates the Handle object, so the
+        # newly constructed Handle already starts at the correct radius.
+        # _style_roi_handles then acts as a second pass to guarantee pen/brush.
+        self.handleSize = HANDLE_SIZE
+        result = super().addFreeHandle(pos, *args, **kwargs)
+        _style_roi_handles(self)
+        return result
 
 
 @dataclass(slots=True)
@@ -341,8 +371,9 @@ class CytometryPlotWidget(QWidget):
     def _roi_outline_pen(self, color: str = ROI_BORDER_COLOR, *, width: int = 3) -> pg.mkPen:
         return pg.mkPen(color, width=width)
 
-    def _configure_roi_handles(self, roi: pg.ROI, *, handle_size: int = ROI_HANDLE_SIZE) -> None:
-        roi.handleSize = handle_size
+    def _configure_roi_handles(self, roi: pg.ROI) -> None:
+        roi.handleSize = HANDLE_SIZE
+        _style_roi_handles(roi)
 
     def _make_scatter_gate_overlay(self, overlay: ScatterGateOverlay) -> pg.PlotCurveItem | None:
         color = QColor(overlay.color_hex)
@@ -402,18 +433,16 @@ class CytometryPlotWidget(QWidget):
             [width, height],
             pen=self._roi_outline_pen(),
             hoverPen=self._roi_outline_pen(ROI_HOVER_COLOR, width=3),
-            handlePen=self._roi_outline_pen(ROI_HANDLE_COLOR, width=ROI_HANDLE_PEN_WIDTH),
-            handleHoverPen=self._roi_outline_pen(ROI_HANDLE_HOVER_COLOR, width=ROI_HANDLE_PEN_WIDTH),
             movable=True,
             removable=False,
             rotatable=False,
             resizable=True,
         )
-        self._configure_roi_handles(roi)
         roi.addScaleHandle((0, 0), (1, 1))
         roi.addScaleHandle((1, 1), (0, 0))
         roi.addScaleHandle((0, 1), (1, 0))
         roi.addScaleHandle((1, 0), (0, 1))
+        self._configure_roi_handles(roi)
 
         self.plot_widget.addItem(roi)
         self._rect_roi = roi
@@ -443,19 +472,19 @@ class CytometryPlotWidget(QWidget):
 
         self.clear_all_rois()
 
-        roi = pg.PolyLineROI(
+        roi = _GatePolyLineROI(
             points,
             closed=True,
             pen=self._roi_outline_pen(),
             hoverPen=self._roi_outline_pen(ROI_HOVER_COLOR, width=3),
-            handlePen=self._roi_outline_pen(ROI_HANDLE_COLOR, width=ROI_HANDLE_PEN_WIDTH),
-            handleHoverPen=self._roi_outline_pen(ROI_HANDLE_HOVER_COLOR, width=ROI_HANDLE_PEN_WIDTH),
             movable=True,
             removable=False,
             rotatable=False,
             resizable=False,
         )
-        self._configure_roi_handles(roi, handle_size=POLYGON_HANDLE_SIZE)
+        # Handles are styled inside _GatePolyLineROI.addFreeHandle during
+        # construction and on every subsequent vertex insertion.
+        roi.handleSize = HANDLE_SIZE
         self.plot_widget.addItem(roi)
         self._poly_roi = roi
         return True
@@ -481,14 +510,12 @@ class CytometryPlotWidget(QWidget):
             [width, height],
             pen=self._roi_outline_pen(),
             hoverPen=self._roi_outline_pen(ROI_HOVER_COLOR, width=3),
-            handlePen=self._roi_outline_pen(ROI_HANDLE_COLOR, width=ROI_HANDLE_PEN_WIDTH),
-            handleHoverPen=self._roi_outline_pen(ROI_HANDLE_HOVER_COLOR, width=ROI_HANDLE_PEN_WIDTH),
             movable=True,
             removable=False,
             rotatable=False,
             resizable=True,
         )
-        self._configure_roi_handles(roi, handle_size=CIRCLE_HANDLE_SIZE)
+        self._configure_roi_handles(roi)
 
         self.plot_widget.addItem(roi)
         self._circle_roi = roi
