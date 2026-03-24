@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 import numpy as np
 import pyqtgraph as pg
+from PySide6.QtCore import Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QSizePolicy, QVBoxLayout, QWidget
 
@@ -80,6 +81,12 @@ class HistogramGateOverlay:
 class CytometryPlotWidget(QWidget):
     """Central plotting area for 1D/2D cytometry views."""
 
+    # Emitted on right-click when data is loaded.
+    # scatter_right_clicked(x, y, screen_pos): right-click on scatter/2D plot
+    # histogram_right_clicked(x, screen_pos): right-click on histogram
+    scatter_right_clicked = Signal(float, float, object)
+    histogram_right_clicked = Signal(float, object)
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setMinimumWidth(0)
@@ -114,6 +121,8 @@ class CytometryPlotWidget(QWidget):
         self._poly_roi: pg.PolyLineROI | None = None
         self._circle_roi: pg.EllipseROI | None = None
         self._range_region: pg.LinearRegionItem | None = None
+
+        self.plot_widget.scene().sigMouseClicked.connect(self._on_scene_mouse_clicked)
 
         self.show_placeholder_data()
 
@@ -618,3 +627,103 @@ class CytometryPlotWidget(QWidget):
         center_x = float(pos.x()) + width / 2.0
         center_y = float(pos.y()) + height / 2.0
         return center_x, center_y, width / 2.0, height / 2.0
+
+    # ------------------------------------------------------------------
+    # Edit-mode ROI loading: pre-position a draft ROI at existing gate geometry
+    # ------------------------------------------------------------------
+
+    def load_rectangle_for_editing(
+        self, x_min: float, x_max: float, y_min: float, y_max: float
+    ) -> bool:
+        self.clear_all_rois()
+        roi = pg.RectROI(
+            [x_min, y_min],
+            [x_max - x_min, y_max - y_min],
+            pen=self._roi_outline_pen(),
+            hoverPen=self._roi_outline_pen(ROI_HOVER_COLOR, width=3),
+            movable=True,
+            removable=False,
+            rotatable=False,
+            resizable=True,
+        )
+        roi.addScaleHandle((0, 0), (1, 1))
+        roi.addScaleHandle((1, 1), (0, 0))
+        roi.addScaleHandle((0, 1), (1, 0))
+        roi.addScaleHandle((1, 0), (0, 1))
+        self._configure_roi_handles(roi)
+        self.plot_widget.addItem(roi)
+        self._rect_roi = roi
+        return True
+
+    def load_polygon_for_editing(self, vertices: list[tuple[float, float]]) -> bool:
+        if len(vertices) < 3:
+            return False
+        self.clear_all_rois()
+        roi = _GatePolyLineROI(
+            vertices,
+            closed=True,
+            pen=self._roi_outline_pen(),
+            hoverPen=self._roi_outline_pen(ROI_HOVER_COLOR, width=3),
+            movable=True,
+            removable=False,
+            rotatable=False,
+            resizable=False,
+        )
+        roi.handleSize = HANDLE_SIZE
+        self.plot_widget.addItem(roi)
+        self._poly_roi = roi
+        return True
+
+    def load_circle_for_editing(
+        self, center_x: float, center_y: float, radius_x: float, radius_y: float
+    ) -> bool:
+        self.clear_all_rois()
+        x0 = center_x - radius_x
+        y0 = center_y - radius_y
+        roi = pg.EllipseROI(
+            [x0, y0],
+            [radius_x * 2, radius_y * 2],
+            pen=self._roi_outline_pen(),
+            hoverPen=self._roi_outline_pen(ROI_HOVER_COLOR, width=3),
+            movable=True,
+            removable=False,
+            rotatable=False,
+            resizable=True,
+        )
+        self._configure_roi_handles(roi)
+        self.plot_widget.addItem(roi)
+        self._circle_roi = roi
+        return True
+
+    def load_range_for_editing(self, x_min: float, x_max: float) -> bool:
+        self.clear_all_rois()
+        region = pg.LinearRegionItem(
+            values=(x_min, x_max),
+            orientation="vertical",
+            movable=True,
+            brush=QColor(15, 118, 110, 50),
+            pen=self._roi_outline_pen(),
+            hoverPen=self._roi_outline_pen(ROI_HOVER_COLOR, width=3),
+        )
+        self.plot_widget.addItem(region)
+        self._range_region = region
+        return True
+
+    # ------------------------------------------------------------------
+    # Scene right-click forwarding
+    # ------------------------------------------------------------------
+
+    def _on_scene_mouse_clicked(self, event) -> None:
+        from PySide6.QtCore import Qt as _Qt
+        if event.button() != _Qt.MouseButton.RightButton:
+            return
+        if self._base_scatter_item is None and self._hist_item is None:
+            return
+        vb = self.plot_widget.getPlotItem().getViewBox()
+        data_pos = vb.mapSceneToView(event.scenePos())
+        if self._hist_item is not None:
+            self.histogram_right_clicked.emit(float(data_pos.x()), event.screenPos())
+        else:
+            self.scatter_right_clicked.emit(
+                float(data_pos.x()), float(data_pos.y()), event.screenPos()
+            )

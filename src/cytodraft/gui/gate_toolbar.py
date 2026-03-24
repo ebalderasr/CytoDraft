@@ -146,8 +146,12 @@ class GateToolbar(QWidget):
                 "Click to choose gate shape: Rectangle, Polygon, or Circle"
             )
 
-    def set_drawing_active(self, active: bool) -> None:
-        """Enable Apply / Clear and change their colors when a draft ROI exists."""
+    def set_drawing_active(self, active: bool, *, edit_mode: bool = False) -> None:
+        """Enable Apply / Clear and change their colors when a draft ROI exists.
+
+        In *edit_mode* the Apply button reads "Update Gate" and the Clear button
+        reads "Cancel Edit" so the user knows they are reshaping an existing gate.
+        """
         self._apply_btn.setEnabled(active)
         self._clear_btn.setEnabled(active)
 
@@ -155,8 +159,17 @@ class GateToolbar(QWidget):
         self._clear_btn.setStyleSheet(_CLEAR_ACTIVE if active else _CLEAR_INACTIVE)
 
         if active:
-            self._status_label.setText("ROI ready — adjust it on the plot, then click Apply Gate.")
+            if edit_mode:
+                self._apply_btn.setText("Update Gate")
+                self._clear_btn.setText("Cancel Edit")
+                self._status_label.setText("Edit mode — adjust the ROI on the plot, then click Update Gate.")
+            else:
+                self._apply_btn.setText("Apply Gate")
+                self._clear_btn.setText("Clear Draft")
+                self._status_label.setText("ROI ready — adjust it on the plot, then click Apply Gate.")
         else:
+            self._apply_btn.setText("Apply Gate")
+            self._clear_btn.setText("Clear Draft")
             self._status_label.setText("")
 
     # ------------------------------------------------------------------

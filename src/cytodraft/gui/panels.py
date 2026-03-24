@@ -82,6 +82,7 @@ class SamplePanel(QWidget):
     recolor_gate_context_requested = Signal(int)
     delete_gate_context_requested = Signal(int)
     export_gate_context_requested = Signal(int)
+    edit_gate_context_requested = Signal(int)
     # Batch sample signals (multi-select)
     delete_samples_batch_requested = Signal(object)             # list[int] workspace_indices
     assign_samples_group_batch_requested = Signal(object, str)  # (list[int], group_name)
@@ -522,6 +523,8 @@ class SamplePanel(QWidget):
             parent_ws_index = int(parent.data(0, ITEM_ROLE_ID))
 
         menu = QMenu(self)
+        edit_action = menu.addAction("Edit gate (resize/reshape)")
+        menu.addSeparator()
         rename_action = menu.addAction("Rename gate")
         recolor_action = menu.addAction("Change color")
         menu.addSeparator()
@@ -536,7 +539,9 @@ class SamplePanel(QWidget):
         if chosen is None:
             return
 
-        if chosen is rename_action:
+        if chosen is edit_action:
+            self.edit_gate_context_requested.emit(gate_index)
+        elif chosen is rename_action:
             self.rename_gate_context_requested.emit(gate_index)
         elif chosen is recolor_action:
             self.recolor_gate_context_requested.emit(gate_index)

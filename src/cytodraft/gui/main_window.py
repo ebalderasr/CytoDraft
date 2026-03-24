@@ -88,6 +88,7 @@ class MainWindow(QMainWindow):
         self._latest_statistics_population_name = ""
         self._latest_statistics_channel_name = ""
         self._workspace_path: Path | None = None
+        self._editing_gate_index: int | None = None
 
         self.sample_panel = SamplePanel()
         self.plot_panel = CytometryPlotWidget()
@@ -227,6 +228,7 @@ class MainWindow(QMainWindow):
         self.sample_panel.recolor_gate_context_requested.connect(self.on_recolor_gate_from_context)
         self.sample_panel.delete_gate_context_requested.connect(self.on_delete_gate_from_context)
         self.sample_panel.export_gate_context_requested.connect(self.on_export_gate_from_context)
+        self.sample_panel.edit_gate_context_requested.connect(self.on_edit_gate)
         self.sample_panel.delete_samples_batch_requested.connect(self.on_delete_samples_batch)
         self.sample_panel.assign_samples_group_batch_requested.connect(self.on_assign_samples_group_batch)
         self.sample_panel.apply_active_gate_to_selected_requested.connect(self.on_apply_active_gate_to_selected)
@@ -237,6 +239,8 @@ class MainWindow(QMainWindow):
         self.gate_toolbar.draw_requested.connect(self.on_create_gate)
         self.gate_toolbar.apply_requested.connect(self.on_apply_gate)
         self.gate_toolbar.clear_requested.connect(self.on_clear_draft_gate)
+        self.plot_panel.scatter_right_clicked.connect(self.on_plot_scatter_right_clicked)
+        self.plot_panel.histogram_right_clicked.connect(self.on_plot_histogram_right_clicked)
         self.inspector_panel.axes_changed.connect(self.on_axes_changed)
         self.inspector_panel.plot_mode_changed.connect(self.on_plot_mode_changed)
         self.inspector_panel.sampling_changed.connect(self.on_sampling_changed)
@@ -1221,6 +1225,10 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("No sample loaded", 4000)
             return
 
+        if self._editing_gate_index is not None:
+            self._apply_gate_update()
+            return
+
         mode = self.inspector_panel.current_plot_mode()
         if mode == "histogram":
             self._apply_range_gate()
@@ -1720,11 +1728,367 @@ class MainWindow(QMainWindow):
                 4000,
             )
 
+    # ------------------------------------------------------------------
+    # Gate editing: load existing gate geometry into an editable ROI
+    # ------------------------------------------------------------------
+
+    def on_edit_gate(self, gate_index: int) -> None:
+        """Load an existing gate's geometry into an interactive draft ROI for editing."""
+        if self.current_sample is None:
+            self.statusBar().showMessage("No sample loaded", 4000)
+            return
+        if gate_index < 0 or gate_index >= len(self.gates):
+            return
+
+        gate = self.gates[gate_index]
+        x_idx, y_idx = self.inspector_panel.current_axes()
+        loaded = False
+
+        if isinstance(gate, RectangleGate):
+            if gate.x_channel_index != x_idx or gate.y_channel_index != y_idx:
+                self.statusBar().showMessage(
+                    f"Switch axes to {gate.x_label} vs {gate.y_label} to edit this gate", 5000
+                )
+                return
+            loaded = self.plot_panel.load_rectangle_for_editing(
+                gate.x_min, gate.x_max, gate.y_min, gate.y_max
+            )
+        elif isinstance(gate, PolygonGate):
+            if gate.x_channel_index != x_idx or gate.y_channel_index != y_idx:
+                self.statusBar().showMessage(
+                    f"Switch axes to {gate.x_label} vs {gate.y_label} to edit this gate", 5000
+                )
+                return
+            loaded = self.plot_panel.load_polygon_for_editing(gate.vertices)
+        elif isinstance(gate, CircleGate):
+            if gate.x_channel_index != x_idx or gate.y_channel_index != y_idx:
+                self.statusBar().showMessage(
+                    f"Switch axes to {gate.x_label} vs {gate.y_label} to edit this gate", 5000
+                )
+                return
+            rx = gate.radius_x if gate.radius_x is not None else gate.radius
+            ry = gate.radius_y if gate.radius_y is not None else gate.radius
+            loaded = self.plot_panel.load_circle_for_editing(gate.center_x, gate.center_y, rx, ry)
+        elif isinstance(gate, RangeGate):
+            if gate.channel_index != x_idx:
+                self.statusBar().showMessage(
+                    f"Switch the X axis to {gate.channel_label} to edit this gate", 5000
+                )
+                return
+            loaded = self.plot_panel.load_range_for_editing(gate.x_min, gate.x_max)
+
+        if not loaded:
+            self.statusBar().showMessage("Cannot load gate for editing on the current plot", 4000)
+            return
+
+        self._editing_gate_index = gate_index
+        self.active_gate = gate
+        self.gate_toolbar.set_drawing_active(True, edit_mode=True)
+        self.inspector_panel.set_active_gate(f"Editing: {gate.name}")
+        self.statusBar().showMessage(
+            f"Editing '{gate.name}' — adjust the ROI, then click Update Gate.", 6000
+        )
+
+    def _apply_gate_update(self) -> None:
+        """Recalculate the mask for the gate being edited and update it in-place."""
+        if self.current_sample is None or self._editing_gate_index is None:
+            return
+
+        gate_index = self._editing_gate_index
+        if gate_index < 0 or gate_index >= len(self.gates):
+            return
+
+        gate = self.gates[gate_index]
+        sample = self.current_sample
+
+        parent_mask = self._mask_for_population_name(gate.parent_name)
+        if parent_mask is None:
+            self.statusBar().showMessage("Parent population not found; cannot update gate", 4000)
+            return
+
+        parent_count = int(parent_mask.sum())
+        total_count = sample.event_count
+
+        if isinstance(gate, RectangleGate):
+            bounds = self.plot_panel.rectangle_roi_bounds()
+            if bounds is None:
+                return
+            x_min, x_max, y_min, y_max = bounds
+            x = apply_scale(sample.events[:, gate.x_channel_index], gate.x_scale)
+            y = apply_scale(sample.events[:, gate.y_channel_index], gate.y_scale)
+            full_mask = rectangle_mask_from_parent(
+                x, y, parent_mask, x_min=x_min, x_max=x_max, y_min=y_min, y_max=y_max
+            )
+            gate.x_min = min(x_min, x_max)
+            gate.x_max = max(x_min, x_max)
+            gate.y_min = min(y_min, y_max)
+            gate.y_max = max(y_min, y_max)
+        elif isinstance(gate, PolygonGate):
+            vertices = self.plot_panel.polygon_roi_points()
+            if not vertices or len(vertices) < 3:
+                return
+            x = apply_scale(sample.events[:, gate.x_channel_index], gate.x_scale)
+            y = apply_scale(sample.events[:, gate.y_channel_index], gate.y_scale)
+            full_mask = polygon_mask_from_parent(x, y, parent_mask, vertices)
+            gate.vertices = [(float(px), float(py)) for px, py in vertices]
+        elif isinstance(gate, CircleGate):
+            geometry = self.plot_panel.circle_roi_geometry()
+            if geometry is None:
+                return
+            center_x, center_y, radius_x, radius_y = geometry
+            x = apply_scale(sample.events[:, gate.x_channel_index], gate.x_scale)
+            y = apply_scale(sample.events[:, gate.y_channel_index], gate.y_scale)
+            full_mask = circle_mask_from_parent(
+                x,
+                y,
+                parent_mask,
+                center_x=center_x,
+                center_y=center_y,
+                radius=max(radius_x, radius_y),
+                radius_x=radius_x,
+                radius_y=radius_y,
+            )
+            gate.center_x = center_x
+            gate.center_y = center_y
+            gate.radius_x = radius_x
+            gate.radius_y = radius_y
+            gate.radius = max(radius_x, radius_y)
+        elif isinstance(gate, RangeGate):
+            bounds = self.plot_panel.range_region_bounds()
+            if bounds is None:
+                return
+            x_min, x_max = bounds
+            x = apply_scale(sample.events[:, gate.channel_index], gate.x_scale)
+            full_mask = range_mask_from_parent(x, parent_mask, x_min=x_min, x_max=x_max)
+            gate.x_min = min(x_min, x_max)
+            gate.x_max = max(x_min, x_max)
+        else:
+            return
+
+        event_count = int(full_mask.sum())
+        gate.full_mask = full_mask
+        gate.event_count = event_count
+        gate.percentage_parent = (event_count / parent_count * 100.0) if parent_count else 0.0
+        gate.percentage_total = (event_count / total_count * 100.0) if total_count else 0.0
+
+        # Recalculate masks for all gates that are descendants of this one
+        self._recalculate_descendant_gate_masks(gate.name)
+
+        self._editing_gate_index = None
+        self._clear_statistics_results()
+        self._refresh_statistics_population_options()
+
+        active_ws_index = self.workspace.active_sample_index
+        if active_ws_index is not None:
+            gate_data = [(self._gate_list_label(g), g.color_hex) for g in self.gates]
+            with QSignalBlocker(self.sample_panel.sample_tree):
+                self.sample_panel.set_gates_for_sample(active_ws_index, gate_data)
+                self.sample_panel.select_gate_row(active_ws_index, gate_index + 1)
+        self._refresh_sample_table()
+        self.gate_toolbar.set_drawing_active(False)
+        self.inspector_panel.set_active_gate(gate.name)
+        self.statusBar().showMessage(
+            f"Updated '{gate.name}': {event_count:,} events "
+            f"({gate.percentage_parent:.2f}% parent, {gate.percentage_total:.2f}% total)",
+            6000,
+        )
+
+    def _recalculate_descendant_gate_masks(self, parent_gate_name: str) -> None:
+        """Recompute full_mask / counts for all gates that descend from parent_gate_name."""
+        if self.current_sample is None:
+            return
+        sample = self.current_sample
+        total_count = sample.event_count
+
+        # Iterate in gate-list order (parents come before children)
+        for gate in self.gates:
+            if not self._gate_has_ancestor(gate, parent_gate_name):
+                continue
+            p_mask = self._mask_for_population_name(gate.parent_name)
+            if p_mask is None:
+                continue
+            parent_count = int(p_mask.sum())
+
+            if isinstance(gate, RectangleGate):
+                x = apply_scale(sample.events[:, gate.x_channel_index], gate.x_scale)
+                y = apply_scale(sample.events[:, gate.y_channel_index], gate.y_scale)
+                mask = rectangle_mask_from_parent(
+                    x, y, p_mask, x_min=gate.x_min, x_max=gate.x_max,
+                    y_min=gate.y_min, y_max=gate.y_max,
+                )
+            elif isinstance(gate, PolygonGate):
+                x = apply_scale(sample.events[:, gate.x_channel_index], gate.x_scale)
+                y = apply_scale(sample.events[:, gate.y_channel_index], gate.y_scale)
+                mask = polygon_mask_from_parent(x, y, p_mask, gate.vertices)
+            elif isinstance(gate, CircleGate):
+                x = apply_scale(sample.events[:, gate.x_channel_index], gate.x_scale)
+                y = apply_scale(sample.events[:, gate.y_channel_index], gate.y_scale)
+                rx = gate.radius_x if gate.radius_x is not None else gate.radius
+                ry = gate.radius_y if gate.radius_y is not None else gate.radius
+                mask = circle_mask_from_parent(
+                    x, y, p_mask,
+                    center_x=gate.center_x, center_y=gate.center_y,
+                    radius=gate.radius, radius_x=rx, radius_y=ry,
+                )
+            elif isinstance(gate, RangeGate):
+                x = apply_scale(sample.events[:, gate.channel_index], gate.x_scale)
+                mask = range_mask_from_parent(x, p_mask, x_min=gate.x_min, x_max=gate.x_max)
+            else:
+                continue
+
+            cnt = int(mask.sum())
+            gate.full_mask = mask
+            gate.event_count = cnt
+            gate.percentage_parent = (cnt / parent_count * 100.0) if parent_count else 0.0
+            gate.percentage_total = (cnt / total_count * 100.0) if total_count else 0.0
+
+    def _gate_has_ancestor(self, gate: GateModel, ancestor_name: str) -> bool:
+        """Return True if *gate* has *ancestor_name* anywhere in its parent chain."""
+        current = gate.parent_name
+        visited: set[str] = set()
+        while current != "All events":
+            if current == ancestor_name:
+                return True
+            if current in visited:
+                break
+            visited.add(current)
+            parent_gate = next((g for g in self.gates if g.name == current), None)
+            if parent_gate is None:
+                break
+            current = parent_gate.parent_name
+        return False
+
+    # ------------------------------------------------------------------
+    # Plot right-click: hit-test gates and show context menu
+    # ------------------------------------------------------------------
+
+    def on_plot_scatter_right_clicked(self, x: float, y: float, screen_pos) -> None:
+        """Handle right-click on scatter plot: show gate context menu if a gate is hit."""
+        if not self.gates:
+            return
+        gate_index = self._find_gate_at_scatter_coords(x, y)
+        if gate_index is None:
+            return
+        self._show_gate_plot_context_menu(gate_index, screen_pos)
+
+    def on_plot_histogram_right_clicked(self, x: float, screen_pos) -> None:
+        """Handle right-click on histogram: show gate context menu if within a range gate."""
+        if not self.gates:
+            return
+        gate_index = self._find_gate_at_histogram_coord(x)
+        if gate_index is None:
+            return
+        self._show_gate_plot_context_menu(gate_index, screen_pos)
+
+    def _show_gate_plot_context_menu(self, gate_index: int, screen_pos) -> None:
+        gate = self.gates[gate_index]
+        self.active_gate = gate
+
+        active_ws_index = self.workspace.active_sample_index
+        if active_ws_index is not None:
+            with QSignalBlocker(self.sample_panel.sample_tree):
+                self.sample_panel.select_gate_row(active_ws_index, gate_index + 1)
+        self.inspector_panel.set_active_gate(self._gate_list_label(gate))
+
+        menu = QMenu(self)
+        edit_action = menu.addAction("Edit gate (resize/reshape)")
+        menu.addSeparator()
+        rename_action = menu.addAction("Rename gate")
+        recolor_action = menu.addAction("Change color")
+        menu.addSeparator()
+        export_action = menu.addAction("Export gate events...")
+        menu.addSeparator()
+        apply_group_action = menu.addAction("Apply gate to this group")
+        apply_all_action = menu.addAction("Apply gate to all samples")
+        menu.addSeparator()
+        delete_action = menu.addAction("Delete gate")
+
+        from PySide6.QtCore import QPointF
+        if hasattr(screen_pos, "toPoint"):
+            global_pos = screen_pos.toPoint()
+        else:
+            global_pos = screen_pos
+
+        chosen = menu.exec(global_pos)
+        if chosen is None:
+            return
+
+        if chosen is edit_action:
+            self.on_edit_gate(gate_index)
+        elif chosen is rename_action:
+            self.on_rename_gate_from_context(gate_index)
+        elif chosen is recolor_action:
+            self.on_recolor_gate_from_context(gate_index)
+        elif chosen is export_action:
+            self.on_export_gate_from_context(gate_index)
+        elif chosen is delete_action:
+            self.on_delete_gate_from_context(gate_index)
+        elif chosen is apply_group_action and active_ws_index is not None:
+            self.on_apply_active_gate_to_group(active_ws_index)
+        elif chosen is apply_all_action and active_ws_index is not None:
+            self.on_apply_active_gate_to_all_samples(active_ws_index)
+
+    def _find_gate_at_scatter_coords(self, x: float, y: float) -> int | None:
+        """Return the index of the topmost gate (by list order) whose shape contains (x, y)."""
+        x_idx, y_idx = self.inspector_panel.current_axes()
+        for i in range(len(self.gates) - 1, -1, -1):
+            gate = self.gates[i]
+            if isinstance(gate, RectangleGate):
+                if gate.x_channel_index != x_idx or gate.y_channel_index != y_idx:
+                    continue
+                if gate.x_min <= x <= gate.x_max and gate.y_min <= y <= gate.y_max:
+                    return i
+            elif isinstance(gate, PolygonGate):
+                if gate.x_channel_index != x_idx or gate.y_channel_index != y_idx:
+                    continue
+                if self._point_in_polygon(x, y, gate.vertices):
+                    return i
+            elif isinstance(gate, CircleGate):
+                if gate.x_channel_index != x_idx or gate.y_channel_index != y_idx:
+                    continue
+                rx = gate.radius_x if gate.radius_x is not None else gate.radius
+                ry = gate.radius_y if gate.radius_y is not None else gate.radius
+                if rx > 0 and ry > 0:
+                    dx = (x - gate.center_x) / rx
+                    dy = (y - gate.center_y) / ry
+                    if dx * dx + dy * dy <= 1.0:
+                        return i
+        return None
+
+    def _find_gate_at_histogram_coord(self, x: float) -> int | None:
+        """Return the index of the range gate whose interval contains x."""
+        x_idx, _ = self.inspector_panel.current_axes()
+        for i in range(len(self.gates) - 1, -1, -1):
+            gate = self.gates[i]
+            if isinstance(gate, RangeGate) and gate.channel_index == x_idx:
+                if gate.x_min <= x <= gate.x_max:
+                    return i
+        return None
+
+    @staticmethod
+    def _point_in_polygon(x: float, y: float, vertices: list[tuple[float, float]]) -> bool:
+        """Ray-casting point-in-polygon test."""
+        n = len(vertices)
+        inside = False
+        j = n - 1
+        for i in range(n):
+            xi, yi = vertices[i]
+            xj, yj = vertices[j]
+            if ((yi > y) != (yj > y)) and (x < (xj - xi) * (y - yi) / (yj - yi) + xi):
+                inside = not inside
+            j = i
+        return inside
+
     def on_clear_draft_gate(self) -> None:
+        was_editing = self._editing_gate_index is not None
+        self._editing_gate_index = None
         self.plot_panel.clear_all_rois()
         self.inspector_panel.set_active_gate(self.current_population_name())
         self.gate_toolbar.set_drawing_active(False)
-        self.statusBar().showMessage("Draft gate cleared", 4000)
+        if was_editing:
+            self.statusBar().showMessage("Gate edit cancelled", 4000)
+        else:
+            self.statusBar().showMessage("Draft gate cleared", 4000)
 
     def on_calculate_statistics(self) -> None:
         if self.current_sample is None:
