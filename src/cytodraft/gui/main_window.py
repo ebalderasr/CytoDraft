@@ -99,7 +99,7 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self._connect_signals()
         self._move_statistics_to_sample_manager()
-        self._refresh_group_list()
+        self._refresh_available_groups()
         self.setAcceptDrops(True)
 
         self.statusBar().showMessage("Ready")
@@ -207,13 +207,11 @@ class MainWindow(QMainWindow):
         self.compensation_editor_action.triggered.connect(self.open_compensation_editor)
         self.sample_panel.add_sample_button.clicked.connect(self.open_fcs_dialog)
         self.sample_panel.remove_sample_button.clicked.connect(self.remove_selected_sample)
-        self.sample_panel.create_group_requested.connect(self.on_create_group)
-        self.sample_panel.delete_group_requested.connect(self.on_delete_group)
-        self.sample_panel.group_selection_changed.connect(self.on_group_selection_changed)
-        self.sample_panel.add_sample_to_group_requested.connect(self.open_fcs_dialog_for_group)
+        self.sample_panel.select_group_samples_requested.connect(self.on_select_group_samples)
         self.sample_panel.rename_group_requested.connect(self.on_rename_group)
         self.sample_panel.recolor_group_requested.connect(self.on_recolor_group)
         self.sample_panel.annotate_group_requested.connect(self.on_annotate_group)
+        self.sample_panel.delete_group_requested.connect(self.on_delete_group)
         self.sample_panel.sample_selection_changed.connect(self.on_sample_selection_changed)
         self.sample_panel.edit_sample_requested.connect(self.on_edit_sample)
         self.sample_panel.add_sample_keyword_requested.connect(self.on_add_keyword_to_sample)
@@ -225,11 +223,17 @@ class MainWindow(QMainWindow):
         self.sample_panel.apply_active_gate_to_all_requested.connect(self.on_apply_active_gate_to_all_samples)
         self.sample_panel.apply_all_gates_to_all_requested.connect(self.on_apply_all_gates_to_all_samples)
         self.sample_panel.gate_selection_changed.connect(self.on_gate_selection_changed)
-        self.sample_panel.apply_gate_requested.connect(self.on_apply_gate)
         self.sample_panel.rename_gate_context_requested.connect(self.on_rename_gate_from_context)
         self.sample_panel.recolor_gate_context_requested.connect(self.on_recolor_gate_from_context)
         self.sample_panel.delete_gate_context_requested.connect(self.on_delete_gate_from_context)
         self.sample_panel.export_gate_context_requested.connect(self.on_export_gate_from_context)
+        self.sample_panel.delete_samples_batch_requested.connect(self.on_delete_samples_batch)
+        self.sample_panel.assign_samples_group_batch_requested.connect(self.on_assign_samples_group_batch)
+        self.sample_panel.apply_active_gate_to_selected_requested.connect(self.on_apply_active_gate_to_selected)
+        self.sample_panel.apply_all_gates_to_selected_requested.connect(self.on_apply_all_gates_to_selected)
+        self.sample_panel.delete_gates_batch_requested.connect(self.on_delete_gates_batch)
+        self.sample_panel.apply_gates_to_group_batch_requested.connect(self.on_apply_gates_to_group_batch)
+        self.sample_panel.apply_gates_to_all_batch_requested.connect(self.on_apply_gates_to_all_batch)
         self.gate_toolbar.draw_requested.connect(self.on_create_gate)
         self.gate_toolbar.apply_requested.connect(self.on_apply_gate)
         self.gate_toolbar.clear_requested.connect(self.on_clear_draft_gate)
@@ -294,7 +298,7 @@ class MainWindow(QMainWindow):
     def _on_workspace_changed_from_sample_manager(self) -> None:
         self._sync_from_workspace()
         self._clear_statistics_results()
-        self._refresh_group_list()
+        self._refresh_available_groups()
         self._refresh_sample_list(select_active=True)
         if self.current_sample is None:
             self.selected_group_name = None
@@ -369,7 +373,7 @@ class MainWindow(QMainWindow):
             self.selected_group_name = resolved_group_name
         self._sync_from_workspace()
         self._clear_statistics_results()
-        self._refresh_group_list()
+        self._refresh_available_groups()
         self._refresh_sample_list(select_active=True)
         self._refresh_gate_panel()
         self._show_active_sample()
@@ -437,36 +441,29 @@ class MainWindow(QMainWindow):
 
     def _refresh_sample_list(self, *, select_active: bool = False) -> None:
         active_index = self.workspace.active_sample_index
-        with QSignalBlocker(self.sample_panel.sample_list):
+        with QSignalBlocker(self.sample_panel.sample_tree):
             self.sample_panel.reset_samples()
-            for workspace_index, workspace_sample in self.workspace.samples_in_group(self.selected_group_name):
-                self.sample_panel.add_sample(workspace_sample.display_name, workspace_index)
+            for workspace_index, workspace_sample in enumerate(self.workspace.samples):
+                group = self.workspace.groups.get(workspace_sample.group_name)
+                group_color = group.color_hex if group is not None else "#5a6b7a"
+                self.sample_panel.add_sample(
+                    workspace_sample.display_name,
+                    workspace_index,
+                    group_color,
+                    workspace_sample.group_name,
+                )
+                gate_data = [(gate.name, gate.color_hex) for gate in workspace_sample.gates]
+                self.sample_panel.set_gates_for_sample(workspace_index, gate_data)
             if select_active and active_index is not None:
-                for row in range(self.sample_panel.sample_list.count()):
-                    item = self.sample_panel.sample_list.item(row)
-                    if item.data(Qt.UserRole) == active_index:
-                        self.sample_panel.sample_list.setCurrentRow(row)
-                        break
+                self.sample_panel.select_sample(active_index)
         self.sample_panel.remove_sample_button.setEnabled(active_index is not None)
 
-    def _refresh_group_list(self) -> None:
-        current_group_name = self.selected_group_name
-        with QSignalBlocker(self.sample_panel.group_list):
-            self.sample_panel.reset_groups()
-            for group_name in sorted(self.workspace.groups):
-                group = self.workspace.groups[group_name]
-                self.sample_panel.add_group(group.name, group.color_hex, group.notes)
-            self.sample_panel.select_group(current_group_name)
-            if self.sample_panel.current_group_name() is None and self.sample_panel.group_list.count() > 0:
-                self.sample_panel.group_list.setCurrentRow(0)
-        self._refresh_group_notes()
-
-    def _refresh_group_notes(self) -> None:
-        if self.selected_group_name is None:
-            self.sample_panel.set_group_notes("")
-            return
-        group = self.workspace.groups.get(self.selected_group_name)
-        self.sample_panel.set_group_notes("" if group is None else group.notes)
+    def _refresh_available_groups(self) -> None:
+        groups = [
+            (group.name, group.color_hex)
+            for group in self.workspace.groups.values()
+        ]
+        self.sample_panel.set_available_groups(groups)
 
     def _population_selection_label(self, sample_index: int | None, population_name: str) -> str:
         if sample_index is None or not population_name:
@@ -492,17 +489,20 @@ class MainWindow(QMainWindow):
         self.sample_panel.set_sample_details(f"Group: {workspace_sample.group_name}")
 
     def _refresh_gate_panel(self) -> None:
-        with QSignalBlocker(self.sample_panel.gate_list):
-            self.sample_panel.reset_gates()
-            for gate in self.gates:
-                self.sample_panel.add_gate(self._gate_list_label(gate), select=False)
-            self._refresh_gate_list_labels()
-            if self.active_gate is None:
-                self.sample_panel.select_gate_row(0)
-                self.inspector_panel.set_active_gate("All events")
-            else:
-                self.sample_panel.select_gate_row(self.gates.index(self.active_gate) + 1)
-                self.inspector_panel.set_active_gate(self.active_gate.name)
+        active_ws_index = self.workspace.active_sample_index
+        if active_ws_index is None:
+            self._update_population_context_labels()
+            self._refresh_statistics_population_options()
+            return
+        gate_data = [(self._gate_list_label(gate), gate.color_hex) for gate in self.gates]
+        gate_row = 0 if self.active_gate is None else self.gates.index(self.active_gate) + 1
+        with QSignalBlocker(self.sample_panel.sample_tree):
+            self.sample_panel.set_gates_for_sample(active_ws_index, gate_data)
+            self.sample_panel.select_gate_row(active_ws_index, gate_row)
+        if self.active_gate is None:
+            self.inspector_panel.set_active_gate("All events")
+        else:
+            self.inspector_panel.set_active_gate(self.active_gate.name)
         self._update_population_context_labels()
         self._refresh_statistics_population_options()
 
@@ -673,19 +673,16 @@ class MainWindow(QMainWindow):
         )
 
     def _update_population_context_labels(self) -> None:
-        current_name = self.current_population_name()
-        if self.active_gate is None:
-            origin_name = "Root population"
-        else:
-            origin_name = self.active_gate.parent_name
-
-        child_names = [gate.name for gate in self._children_of_population(current_name)]
-        self.sample_panel.set_population_context(origin_name, child_names)
+        pass  # Population context is shown in the inspector panel
 
     def _refresh_gate_list_labels(self) -> None:
+        active_ws_index = self.workspace.active_sample_index
+        if active_ws_index is None:
+            return
         for gate_index, gate in enumerate(self.gates):
-            self.sample_panel.update_gate(
-                gate_index,
+            self.sample_panel.update_gate_in_sample(
+                active_ws_index,
+                gate_index + 1,
                 self._gate_list_label(gate),
                 gate.color_hex,
             )
@@ -718,7 +715,7 @@ class MainWindow(QMainWindow):
         self.gates = []
         self.active_gate = None
 
-        self._refresh_group_list()
+        self._refresh_available_groups()
         self.sample_panel.reset_samples()
         self.sample_panel.reset_gates()
         self._update_population_context_labels()
@@ -732,6 +729,16 @@ class MainWindow(QMainWindow):
         self.gate_toolbar.set_drawing_active(False)
 
     def remove_selected_sample(self) -> None:
+        sample_indices = self.sample_panel.selected_sample_workspace_indices()
+        gate_indices = self.sample_panel.selected_gate_indices()
+
+        if len(sample_indices) > 1:
+            self.on_delete_samples_batch(sample_indices)
+            return
+        if len(gate_indices) > 1:
+            self.on_delete_gates_batch(gate_indices)
+            return
+
         sample_index = self.sample_panel.current_sample_workspace_index()
         if self.current_sample is None or sample_index is None:
             self.statusBar().showMessage("No sample selected", 3000)
@@ -740,7 +747,7 @@ class MainWindow(QMainWindow):
         removed_name = self.workspace.remove_sample(sample_index).sample.file_name
         self._sync_from_workspace()
         self._clear_statistics_results()
-        self._refresh_group_list()
+        self._refresh_available_groups()
         self._refresh_sample_list(select_active=True)
         if self.current_sample is None:
             self.clear_loaded_sample()
@@ -770,7 +777,6 @@ class MainWindow(QMainWindow):
     def on_group_selection_changed(self, group_name: object) -> None:
         resolved_group_name = None if group_name is None else str(group_name)
         self.selected_group_name = resolved_group_name
-        self._refresh_group_notes()
         self._refresh_sample_list(select_active=True)
         self._refresh_sample_details()
 
@@ -793,9 +799,14 @@ class MainWindow(QMainWindow):
         self.workspace.rename_group(group_name, normalized)
         if self.selected_group_name == group_name:
             self.selected_group_name = normalized
-        self._refresh_group_list()
+        self._refresh_available_groups()
         self._refresh_sample_list(select_active=True)
         self.statusBar().showMessage(f"Renamed group to {normalized}", 4000)
+
+    def on_select_group_samples(self, group_name: str) -> None:
+        self.sample_panel.highlight_group_samples(group_name)
+        count = sum(1 for ws in self.workspace.samples if ws.group_name == group_name)
+        self.statusBar().showMessage(f"{count} sample(s) in group '{group_name}'", 3000)
 
     def on_create_group(self) -> None:
         group_name, accepted = QInputDialog.getText(
@@ -810,8 +821,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Create group", "Group name cannot be empty.")
             return
         self.workspace.ensure_group(normalized)
-        self._refresh_group_list()
-        self.sample_panel.select_group(normalized)
+        self._refresh_available_groups()
         self.statusBar().showMessage(f"Created group {normalized}", 4000)
 
     def on_delete_group(self, group_name: str) -> None:
@@ -834,7 +844,7 @@ class MainWindow(QMainWindow):
         self.workspace.delete_group(group_name, fallback_group_name=DEFAULT_GROUP_NAME)
         if self.selected_group_name == group_name:
             self.selected_group_name = DEFAULT_GROUP_NAME
-        self._refresh_group_list()
+        self._refresh_available_groups()
         self._refresh_sample_list(select_active=True)
         self._refresh_sample_table()
         self.statusBar().showMessage(f"Deleted group {group_name}", 4000)
@@ -851,7 +861,8 @@ class MainWindow(QMainWindow):
         if not color.isValid():
             return
         group.color_hex = color.name().lower()
-        self._refresh_group_list()
+        self._refresh_available_groups()
+        self._refresh_sample_list(select_active=True)
         self.statusBar().showMessage(
             f"Changed {group.name} color to {group.color_hex}",
             4000,
@@ -870,7 +881,7 @@ class MainWindow(QMainWindow):
         if not accepted:
             return
         group.notes = notes.strip()
-        self._refresh_group_list()
+        self._refresh_available_groups()
         self.statusBar().showMessage(f"Updated annotations for {group.name}", 4000)
 
     def on_edit_compensation_sample(self, sample_index: int) -> None:
@@ -1572,10 +1583,12 @@ class MainWindow(QMainWindow):
             workspace_sample.active_gate_name = gate.name
         self._clear_statistics_results()
         self._refresh_statistics_population_options()
-        self.sample_panel.add_gate(self._gate_list_label(gate), select=False)
-        self._refresh_gate_list_labels()
-        new_row = len(self.gates)
-        self.sample_panel.select_gate_row(new_row)
+        active_ws_index = self.workspace.active_sample_index
+        if active_ws_index is not None:
+            gate_data = [(self._gate_list_label(g), g.color_hex) for g in self.gates]
+            with QSignalBlocker(self.sample_panel.sample_tree):
+                self.sample_panel.set_gates_for_sample(active_ws_index, gate_data)
+                self.sample_panel.select_gate_row(active_ws_index, len(self.gates))
         self._refresh_sample_table()
 
     def on_rename_active_gate(self, raw_name: str) -> None:
@@ -1626,11 +1639,14 @@ class MainWindow(QMainWindow):
 
         self.active_gate.color_hex = color.name().lower()
         gate_index = self.gates.index(self.active_gate)
-        self.sample_panel.update_gate(
-            gate_index,
-            self._gate_list_label(self.active_gate),
-            self.active_gate.color_hex,
-        )
+        active_ws_index = self.workspace.active_sample_index
+        if active_ws_index is not None:
+            self.sample_panel.update_gate_in_sample(
+                active_ws_index,
+                gate_index + 1,
+                self._gate_list_label(self.active_gate),
+                self.active_gate.color_hex,
+            )
         self.statusBar().showMessage(
             f"Changed {self.active_gate.name} color to {self.active_gate.color_hex}",
             4000,
@@ -1674,9 +1690,6 @@ class MainWindow(QMainWindow):
         names_to_delete = self._gate_subtree_names(self.gates, gate.name)
         remaining_gates = [candidate for candidate in self.gates if candidate.name not in names_to_delete]
         self.gates[:] = remaining_gates
-        self.sample_panel.reset_gates()
-        for remaining_gate in self.gates:
-            self.sample_panel.add_gate(self._gate_list_label(remaining_gate), select=False)
         self.active_gate = None
         workspace_sample = self._active_workspace_sample()
         if workspace_sample is not None:
@@ -1689,7 +1702,12 @@ class MainWindow(QMainWindow):
                 workspace_sample.compensation_negative.population_name = ""
                 workspace_sample.compensation_negative.sample_index = None
         self._clear_statistics_results()
-        self.sample_panel.select_gate_row(0)
+        active_ws_index = self.workspace.active_sample_index
+        if active_ws_index is not None:
+            gate_data = [(self._gate_list_label(g), g.color_hex) for g in self.gates]
+            with QSignalBlocker(self.sample_panel.sample_tree):
+                self.sample_panel.set_gates_for_sample(active_ws_index, gate_data)
+                self.sample_panel.select_gate_row(active_ws_index, 0)
         self.inspector_panel.set_active_gate("All events")
         self._refresh_statistics_population_options()
         self._update_population_context_labels()
@@ -1998,7 +2016,7 @@ class MainWindow(QMainWindow):
         normalized_group = group_name.strip() or DEFAULT_GROUP_NAME
         self.workspace.ensure_group(normalized_group)
         workspace_sample.group_name = normalized_group
-        self._refresh_group_list()
+        self._refresh_available_groups()
         self._refresh_sample_list(select_active=True)
         self._refresh_sample_table()
         self.statusBar().showMessage(
@@ -2022,7 +2040,21 @@ class MainWindow(QMainWindow):
         if not normalized:
             QMessageBox.warning(self, "Assign group", "Group name cannot be empty.")
             return
+        self._ensure_group_with_color(normalized)
         self.on_assign_sample_group(sample_index, normalized)
+
+    def _ensure_group_with_color(self, group_name: str) -> None:
+        """Create a new group and prompt for its color if it doesn't already exist."""
+        is_new = group_name not in self.workspace.groups
+        self.workspace.ensure_group(group_name)
+        if is_new:
+            color = QColorDialog.getColor(
+                QColor(self.workspace.groups[group_name].color_hex),
+                self,
+                f"Select color for '{group_name}'",
+            )
+            if color.isValid():
+                self.workspace.groups[group_name].color_hex = color.name().lower()
 
     def on_apply_active_gate_to_group(self, sample_index: int) -> None:
         self._propagate_gates(sample_index, mode="active_gate", scope="group")
@@ -2035,6 +2067,172 @@ class MainWindow(QMainWindow):
 
     def on_apply_all_gates_to_all_samples(self, sample_index: int) -> None:
         self._propagate_gates(sample_index, mode="all_gates", scope="all")
+
+    # ── Batch (multi-select) handlers ────────────────────────────────────
+
+    def on_delete_samples_batch(self, ws_indices: list[int]) -> None:
+        if not ws_indices:
+            return
+        count = len(ws_indices)
+        answer = QMessageBox.question(
+            self,
+            "Delete samples",
+            f"Delete {count} selected sample(s)?",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        for idx in sorted(ws_indices, reverse=True):
+            if 0 <= idx < len(self.workspace.samples):
+                self.workspace.remove_sample(idx)
+        self._sync_from_workspace()
+        self._clear_statistics_results()
+        self._refresh_available_groups()
+        self._refresh_sample_list(select_active=True)
+        if self.current_sample is None:
+            self.clear_loaded_sample()
+        else:
+            self._refresh_gate_panel()
+            self._show_active_sample()
+        self._refresh_sample_table()
+        self.statusBar().showMessage(f"Removed {count} sample(s)", 4000)
+
+    def on_assign_samples_group_batch(self, ws_indices: list[int], group_name: str) -> None:
+        normalized = group_name.strip() or DEFAULT_GROUP_NAME
+        self._ensure_group_with_color(normalized)
+        for idx in ws_indices:
+            if 0 <= idx < len(self.workspace.samples):
+                self.workspace.samples[idx].group_name = normalized
+        self._refresh_available_groups()
+        self._refresh_sample_list(select_active=True)
+        self._refresh_sample_table()
+        self.statusBar().showMessage(
+            f"{len(ws_indices)} sample(s) assigned to {normalized}", 4000
+        )
+
+    def on_apply_active_gate_to_selected(self, ws_indices: list[int]) -> None:
+        active_idx = self.workspace.active_sample_index
+        if active_idx is None:
+            return
+        source_sample = self.workspace.samples[active_idx]
+        if source_sample.active_gate_name is None:
+            self.statusBar().showMessage("Select an active gate first", 5000)
+            return
+        gates_to_apply = [g for g in source_sample.gates if g.name == source_sample.active_gate_name]
+        if not gates_to_apply:
+            return
+        self._propagate_gates_to_indices(active_idx, gates_to_apply, ws_indices)
+
+    def on_apply_all_gates_to_selected(self, ws_indices: list[int]) -> None:
+        active_idx = self.workspace.active_sample_index
+        if active_idx is None:
+            return
+        source_sample = self.workspace.samples[active_idx]
+        gates_to_apply = list(source_sample.gates)
+        if not gates_to_apply:
+            self.statusBar().showMessage("The source sample has no gates to propagate", 5000)
+            return
+        self._propagate_gates_to_indices(active_idx, gates_to_apply, ws_indices)
+
+    def _propagate_gates_to_indices(
+        self,
+        source_idx: int,
+        gates_to_apply: list,
+        target_indices: list[int],
+    ) -> None:
+        applied = 0
+        failures: list[str] = []
+        for idx in target_indices:
+            if idx == source_idx or idx < 0 or idx >= len(self.workspace.samples):
+                continue
+            try:
+                self.gate_service.replace_gates_on_sample(self.workspace.samples[idx], gates_to_apply)
+                applied += 1
+            except Exception as exc:
+                failures.append(f"{self.workspace.samples[idx].sample.file_name}: {exc}")
+        if failures:
+            QMessageBox.warning(self, "Apply gates", "\n".join(failures))
+        if applied and self.workspace.active_sample_index is not None:
+            self._sync_from_workspace()
+            self._refresh_gate_panel()
+            self.redraw_current_plot(show_status=False)
+        self._refresh_sample_table()
+        self.statusBar().showMessage(f"Propagated gates to {applied} sample(s)", 5000)
+
+    def on_delete_gates_batch(self, gate_indices: list[int]) -> None:
+        valid = [i for i in gate_indices if 0 <= i < len(self.gates)]
+        if not valid:
+            return
+        count = len(valid)
+        answer = QMessageBox.question(
+            self,
+            "Delete gates",
+            f"Delete {count} selected gate(s) and their descendants?",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        names_to_delete: set[str] = set()
+        for i in valid:
+            names_to_delete.update(self._gate_subtree_names(self.gates, self.gates[i].name))
+        self.gates[:] = [g for g in self.gates if g.name not in names_to_delete]
+        self.active_gate = None
+        active_ws = self._active_workspace_sample()
+        if active_ws is not None:
+            active_ws.active_gate_name = None
+        for ws in self.workspace.samples:
+            if ws.compensation_positive.population_name in names_to_delete:
+                ws.compensation_positive.population_name = ""
+                ws.compensation_positive.sample_index = None
+            if ws.compensation_negative.population_name in names_to_delete:
+                ws.compensation_negative.population_name = ""
+                ws.compensation_negative.sample_index = None
+        self._clear_statistics_results()
+        active_ws_index = self.workspace.active_sample_index
+        if active_ws_index is not None:
+            gate_data = [(self._gate_list_label(g), g.color_hex) for g in self.gates]
+            with QSignalBlocker(self.sample_panel.sample_tree):
+                self.sample_panel.set_gates_for_sample(active_ws_index, gate_data)
+                self.sample_panel.select_gate_row(active_ws_index, 0)
+        self.inspector_panel.set_active_gate("All events")
+        self._refresh_statistics_population_options()
+        self._update_population_context_labels()
+        self.redraw_current_plot(show_status=False)
+        self.statusBar().showMessage(f"Deleted {count} gate(s)", 4000)
+
+    def on_apply_gates_to_group_batch(self, source_ws_index: int, gate_indices: list[int]) -> None:
+        self._propagate_selected_gates(source_ws_index, gate_indices, scope="group")
+
+    def on_apply_gates_to_all_batch(self, source_ws_index: int, gate_indices: list[int]) -> None:
+        self._propagate_selected_gates(source_ws_index, gate_indices, scope="all")
+
+    def _propagate_selected_gates(
+        self, source_ws_index: int, gate_indices: list[int], *, scope: str
+    ) -> None:
+        if source_ws_index < 0 or source_ws_index >= len(self.workspace.samples):
+            return
+        source_sample = self.workspace.samples[source_ws_index]
+        gates_to_apply = [
+            source_sample.gates[i] for i in gate_indices if 0 <= i < len(source_sample.gates)
+        ]
+        if not gates_to_apply:
+            return
+        target_group_name = source_sample.group_name if scope == "group" else None
+        applied_count, failures, scope_label = self.gate_service.propagate_gates(
+            self.workspace,
+            source_sample_index=source_ws_index,
+            gate_names=[g.name for g in gates_to_apply],
+            target_group_name=target_group_name,
+        )
+        if failures:
+            QMessageBox.warning(self, "Apply gates", "\n".join(failures))
+        if self.workspace.active_sample_index is not None:
+            self._sync_from_workspace()
+            self._refresh_gate_panel()
+            self.redraw_current_plot(show_status=False)
+        self._refresh_sample_table()
+        self.statusBar().showMessage(
+            f"Propagated {len(gates_to_apply)} gate(s) to {applied_count} sample(s) in {scope_label}",
+            6000,
+        )
 
     def _propagate_gates(self, sample_index: int, *, mode: str, scope: str) -> None:
         if sample_index < 0 or sample_index >= len(self.workspace.samples):
@@ -2159,7 +2357,7 @@ class MainWindow(QMainWindow):
             self._sample_table_window = None
 
         self._sync_from_workspace()
-        self._refresh_group_list()
+        self._refresh_available_groups()
         self._refresh_sample_list(select_active=True)
         self._refresh_gate_panel()
         self._show_active_sample()

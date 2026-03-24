@@ -7,13 +7,13 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QFormLayout,
-    QGroupBox,
     QGridLayout,
+    QGroupBox,
     QHBoxLayout,
-    QLabel,
-    QLineEdit,
     QListWidget,
     QListWidgetItem,
+    QLabel,
+    QLineEdit,
     QMenu,
     QPushButton,
     QScrollArea,
@@ -23,6 +23,8 @@ from PySide6.QtWidgets import (
     QTableWidgetItem,
     QTabWidget,
     QToolButton,
+    QTreeWidget,
+    QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -30,6 +32,8 @@ from PySide6.QtWidgets import (
 from cytodraft.core.statistics import STATISTIC_DEFINITIONS
 
 ITEM_ROLE_ID = Qt.UserRole
+ITEM_ROLE_TYPE = Qt.UserRole + 1
+ITEM_ROLE_GROUP = Qt.UserRole + 2
 
 
 def _make_manager_button(
@@ -37,27 +41,25 @@ def _make_manager_button(
     *,
     tooltip: str,
     variant: str,
-    width: int,
+    fixed_width: int | None = None,
 ) -> QToolButton:
     button = QToolButton()
     button.setText(text)
     button.setToolTip(tooltip)
     button.setProperty("variant", variant)
     button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
-    button.setFixedSize(width, 26)
+    button.setFixedHeight(30)
+    if fixed_width is not None:
+        button.setFixedWidth(fixed_width)
+    else:
+        button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
     return button
 
 
 class SamplePanel(QWidget):
-    """Left panel: loaded samples and gate list."""
+    """Unified left panel: all samples listed with their gates as children."""
 
-    group_selection_changed = Signal(object)
-    add_sample_to_group_requested = Signal(str)
-    rename_group_requested = Signal(str)
-    recolor_group_requested = Signal(str)
-    annotate_group_requested = Signal(str)
-    create_group_requested = Signal()
-    delete_group_requested = Signal(str)
+    # Sample signals
     sample_selection_changed = Signal(int)
     edit_sample_requested = Signal(int)
     add_sample_keyword_requested = Signal(int)
@@ -68,446 +70,456 @@ class SamplePanel(QWidget):
     apply_all_gates_to_group_requested = Signal(int)
     apply_active_gate_to_all_requested = Signal(int)
     apply_all_gates_to_all_requested = Signal(int)
+    # Group signals (accessed via sample context)
+    select_group_samples_requested = Signal(str)   # group_name
+    rename_group_requested = Signal(str)
+    recolor_group_requested = Signal(str)
+    annotate_group_requested = Signal(str)
+    delete_group_requested = Signal(str)
+    # Gate signals
     gate_selection_changed = Signal(int)
-    apply_gate_requested = Signal()
     rename_gate_context_requested = Signal(int)
     recolor_gate_context_requested = Signal(int)
     delete_gate_context_requested = Signal(int)
     export_gate_context_requested = Signal(int)
+    # Batch sample signals (multi-select)
+    delete_samples_batch_requested = Signal(object)             # list[int] workspace_indices
+    assign_samples_group_batch_requested = Signal(object, str)  # (list[int], group_name)
+    apply_active_gate_to_selected_requested = Signal(object)    # list[int] workspace_indices
+    apply_all_gates_to_selected_requested = Signal(object)      # list[int] workspace_indices
+    # Batch gate signals (multi-select)
+    delete_gates_batch_requested = Signal(object)               # list[int] gate_indices
+    apply_gates_to_group_batch_requested = Signal(int, object)  # (source_ws_index, list[int])
+    apply_gates_to_all_batch_requested = Signal(int, object)    # (source_ws_index, list[int])
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setMinimumWidth(300)
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
-        self._plot_mode = "scatter"
+        self._available_groups: list[tuple[str, str]] = []  # (name, color_hex)
+        self._active_workspace_index: int | None = None
+        self._ws_index_to_item: dict[int, QTreeWidgetItem] = {}
 
-        self.sample_list = QListWidget()
-        self.sample_list.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.sample_list.setSpacing(2)
-        self.sample_list.setMinimumHeight(120)
-
-        self.group_list = QListWidget()
-        self.group_list.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.group_list.setSpacing(2)
-        self.group_list.setMinimumHeight(88)
-
-        self.gate_list = QListWidget()
-        self.gate_list.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.gate_list.setSpacing(2)
-        self.gate_list.setMinimumHeight(96)
-
-        self.add_group_button = _make_manager_button(
-            "+",
-            tooltip="Create group",
-            variant="primary",
-            width=26,
-        )
-
-        self.remove_group_button = _make_manager_button(
-            "-",
-            tooltip="Delete selected group",
-            variant="danger",
-            width=26,
-        )
-
-        self.edit_group_button = _make_manager_button(
-            "Edit",
-            tooltip="Rename selected group",
-            variant="subtle",
-            width=36,
-        )
+        self.sample_tree = QTreeWidget()
+        self.sample_tree.setHeaderHidden(True)
+        self.sample_tree.setColumnCount(1)
+        self.sample_tree.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.sample_tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.sample_tree.setIndentation(16)
+        self.sample_tree.setAnimated(True)
 
         self.add_sample_button = _make_manager_button(
             "+",
-            tooltip="Add samples to the selected group",
+            tooltip="Add samples to workspace",
             variant="primary",
-            width=26,
+            fixed_width=36,
         )
-
         self.remove_sample_button = _make_manager_button(
-            "-",
-            tooltip="Remove the selected sample",
+            "−",
+            tooltip="Remove selected sample(s)",
             variant="danger",
-            width=26,
+            fixed_width=36,
         )
         self.remove_sample_button.setEnabled(False)
-
-        self.edit_sample_button = _make_manager_button(
-            "Edit",
-            tooltip="Rename sample or add keyword",
+        self.more_options_button = _make_manager_button(
+            "⋯  Options",
+            tooltip="Show all actions for the selected item",
             variant="subtle",
-            width=36,
         )
-        self.edit_sample_button.setEnabled(False)
+        self.more_options_button.setEnabled(False)
 
-        self.add_gate_button = _make_manager_button(
-            "+",
-            tooltip="Apply current draft gate",
-            variant="primary",
-            width=26,
-        )
-
-        self.remove_gate_button = _make_manager_button(
-            "-",
-            tooltip="Delete selected gate",
-            variant="danger",
-            width=26,
-        )
-        self.remove_gate_button.setEnabled(False)
-
-        self.edit_gate_button = _make_manager_button(
-            "Edit",
-            tooltip="Rename gate or change color",
-            variant="subtle",
-            width=36,
-        )
-        self.edit_gate_button.setEnabled(False)
-
-        group_box = QGroupBox("Groups")
-        group_layout = QVBoxLayout()
-        group_layout.addWidget(self.group_list)
-        group_actions = QHBoxLayout()
-        group_actions.setContentsMargins(0, 0, 0, 0)
-        group_actions.setSpacing(6)
-        group_actions.addWidget(self.add_group_button)
-        group_actions.addWidget(self.remove_group_button)
-        group_actions.addWidget(self.edit_group_button)
-        group_actions.addStretch(1)
-        group_layout.addLayout(group_actions)
-        self.group_notes_label = QLabel("Notes: —")
-        self.group_notes_label.setObjectName("panelInfoLabel")
-        self.group_notes_label.setWordWrap(True)
-        group_layout.addWidget(self.group_notes_label)
-        group_box.setLayout(group_layout)
-
-        sample_box = QGroupBox("Samples in group")
-        sample_layout = QVBoxLayout()
-        sample_layout.addWidget(self.sample_list)
-        self.sample_details_label = QLabel("Sample details: —")
-        self.sample_details_label.setObjectName("panelInfoLabel")
-        self.sample_details_label.setWordWrap(True)
-        sample_layout.addWidget(self.sample_details_label)
-        sample_actions = QHBoxLayout()
-        sample_actions.setContentsMargins(0, 0, 0, 0)
-        sample_actions.setSpacing(6)
-        sample_actions.addWidget(self.add_sample_button)
-        sample_actions.addWidget(self.remove_sample_button)
-        sample_actions.addWidget(self.edit_sample_button)
-        sample_actions.addStretch(1)
-        sample_layout.addLayout(sample_actions)
-        sample_box.setLayout(sample_layout)
-
-        gate_box = QGroupBox("Gates / populations")
-        gate_layout = QVBoxLayout()
-        gate_layout.addWidget(self.gate_list)
-        self.population_origin_label = QLabel("Origin: —")
-        self.population_origin_label.setObjectName("panelInfoLabel")
-        self.population_origin_label.setWordWrap(True)
-        self.population_children_label = QLabel("Subpopulations: —")
-        self.population_children_label.setObjectName("panelInfoLabel")
-        self.population_children_label.setWordWrap(True)
-        gate_layout.addWidget(self.population_origin_label)
-        gate_layout.addWidget(self.population_children_label)
-        gate_actions = QHBoxLayout()
-        gate_actions.setContentsMargins(0, 0, 0, 0)
-        gate_actions.setSpacing(6)
-        gate_actions.addWidget(self.add_gate_button)
-        gate_actions.addWidget(self.remove_gate_button)
-        gate_actions.addWidget(self.edit_gate_button)
-        gate_actions.addStretch(1)
-        gate_layout.addLayout(gate_actions)
-        gate_box.setLayout(gate_layout)
+        toolbar_row = QHBoxLayout()
+        toolbar_row.setContentsMargins(0, 0, 0, 0)
+        toolbar_row.setSpacing(6)
+        toolbar_row.addWidget(self.add_sample_button)
+        toolbar_row.addWidget(self.remove_sample_button)
+        toolbar_row.addWidget(self.more_options_button)
 
         layout = QVBoxLayout()
-        layout.setContentsMargins(2, 2, 2, 2)
-        layout.setSpacing(12)
-        layout.addWidget(group_box, stretch=2)
-        layout.addWidget(sample_box, stretch=3)
-        layout.addWidget(gate_box, stretch=2)
+        layout.setContentsMargins(2, 4, 2, 2)
+        layout.setSpacing(4)
+        layout.addLayout(toolbar_row)
+        layout.addWidget(self.sample_tree)
         self.setLayout(layout)
 
-        self.group_list.currentItemChanged.connect(self._on_group_selection_changed)
-        self.group_list.customContextMenuRequested.connect(self._on_group_context_menu_requested)
-        self.sample_list.currentRowChanged.connect(self._on_sample_selection_changed)
-        self.sample_list.customContextMenuRequested.connect(self._on_sample_context_menu_requested)
-        self.gate_list.currentRowChanged.connect(self._on_gate_selection_changed)
-        self.gate_list.customContextMenuRequested.connect(self._on_gate_context_menu_requested)
-        self.add_group_button.clicked.connect(self.create_group_requested.emit)
-        self.remove_group_button.clicked.connect(self._on_delete_group_button_clicked)
-        self.edit_group_button.clicked.connect(self._on_edit_group_button_clicked)
-        self.edit_sample_button.clicked.connect(self._on_edit_sample_button_clicked)
-        self.add_gate_button.clicked.connect(self.apply_gate_requested.emit)
-        self.remove_gate_button.clicked.connect(self._on_delete_gate_button_clicked)
-        self.edit_gate_button.clicked.connect(self._on_edit_gate_button_clicked)
+        self.sample_tree.currentItemChanged.connect(self._on_tree_selection_changed)
+        self.sample_tree.itemSelectionChanged.connect(self._on_selection_set_changed)
+        self.sample_tree.customContextMenuRequested.connect(self._on_tree_context_menu)
+        self.more_options_button.clicked.connect(self._on_more_options_clicked)
 
-        self.reset_groups()
-        self.reset_gates()
+    # ── Public API ──────────────────────────────────────────────────────
 
-    def add_sample(self, name: str, workspace_index: int) -> None:
-        item = QListWidgetItem(name)
-        item.setData(ITEM_ROLE_ID, workspace_index)
-        self.sample_list.addItem(item)
-        self.sample_list.setCurrentRow(self.sample_list.count() - 1)
+    def set_available_groups(self, groups: list[tuple[str, str]]) -> None:
+        """Update the list of groups used to populate the right-click assign submenu."""
+        self._available_groups = list(groups)
 
-    def update_sample(self, workspace_index: int, label: str) -> None:
-        for row in range(self.sample_list.count()):
-            item = self.sample_list.item(row)
-            if item.data(ITEM_ROLE_ID) == workspace_index:
-                item.setText(label)
-                break
-
-    def reset_groups(self) -> None:
-        self.group_list.clear()
-        all_groups_item = QListWidgetItem("All groups")
-        all_groups_item.setData(ITEM_ROLE_ID, None)
-        self.group_list.addItem(all_groups_item)
-        self.group_list.setCurrentRow(0)
-        self.group_notes_label.setText("Notes: —")
-
-    def add_group(self, name: str, color_hex: str, notes: str) -> None:
-        item = QListWidgetItem(name)
-        item.setData(ITEM_ROLE_ID, name)
-        item.setForeground(QColor(color_hex))
-        item.setToolTip(notes or "No notes")
-        self.group_list.addItem(item)
-
-    def update_group(self, current_name: str, new_name: str, color_hex: str, notes: str) -> None:
-        for row in range(self.group_list.count()):
-            item = self.group_list.item(row)
-            if item.data(ITEM_ROLE_ID) == current_name:
-                item.setText(new_name)
-                item.setData(ITEM_ROLE_ID, new_name)
-                item.setForeground(QColor(color_hex))
-                item.setToolTip(notes or "No notes")
-                if item.isSelected():
-                    self.set_group_notes(notes)
-                break
-
-    def select_group(self, group_name: str | None) -> None:
-        for row in range(self.group_list.count()):
-            item = self.group_list.item(row)
-            if item.data(ITEM_ROLE_ID) == group_name:
-                self.group_list.setCurrentRow(row)
-                break
-
-    def current_group_name(self) -> str | None:
-        item = self.group_list.currentItem()
-        return item.data(ITEM_ROLE_ID) if item is not None else None
-
-    def set_group_notes(self, notes: str) -> None:
-        self.group_notes_label.setText(f"Notes: {notes}" if notes else "Notes: —")
-
-    def current_sample_workspace_index(self) -> int | None:
-        item = self.sample_list.currentItem()
-        if item is None:
-            return None
-        data = item.data(ITEM_ROLE_ID)
-        return int(data) if data is not None else None
-
-    def set_sample_details(self, details: str) -> None:
-        self.sample_details_label.setText(f"Sample details: {details}" if details else "Sample details: —")
-
-    def reset_gates(self) -> None:
-        self.gate_list.clear()
-        self.gate_list.addItem("All events")
-        self.gate_list.setCurrentRow(0)
-        self.set_population_context("Root population", [])
+    def reset(self) -> None:
+        self.sample_tree.clear()
+        self._ws_index_to_item.clear()
+        self._active_workspace_index = None
+        self.remove_sample_button.setEnabled(False)
+        self.more_options_button.setEnabled(False)
 
     def reset_samples(self) -> None:
-        self.sample_list.clear()
-        self.remove_sample_button.setEnabled(False)
-        self.sample_details_label.setText("Sample details: —")
+        self.reset()
+
+    def add_sample(
+        self,
+        name: str,
+        workspace_index: int,
+        group_color: str = "#5a6b7a",
+        group_name: str = "",
+    ) -> None:
+        item = QTreeWidgetItem(self.sample_tree)
+        item.setText(0, name)
+        item.setData(0, ITEM_ROLE_ID, workspace_index)
+        item.setData(0, ITEM_ROLE_TYPE, "sample")
+        item.setData(0, ITEM_ROLE_GROUP, group_name)
+        item.setForeground(0, QColor(group_color))
+        if group_name:
+            item.setToolTip(0, f"Group: {group_name}")
+        self._ws_index_to_item[workspace_index] = item
+        self._add_all_events_child(item)
+
+    def update_sample(
+        self,
+        workspace_index: int,
+        label: str,
+        group_color: str,
+        group_name: str = "",
+    ) -> None:
+        item = self._ws_index_to_item.get(workspace_index)
+        if item is not None:
+            item.setText(0, label)
+            item.setForeground(0, QColor(group_color))
+            if group_name:
+                item.setData(0, ITEM_ROLE_GROUP, group_name)
+                item.setToolTip(0, f"Group: {group_name}")
+
+    def set_gates_for_sample(
+        self,
+        workspace_index: int,
+        gates: list[tuple[str, str]],
+    ) -> None:
+        """Replace gate children for a sample. gates = list of (label, color_hex)."""
+        item = self._ws_index_to_item.get(workspace_index)
+        if item is None:
+            return
+        was_expanded = item.isExpanded()
+        while item.childCount() > 0:
+            item.removeChild(item.child(0))
+        self._add_all_events_child(item)
+        for gate_row, (label, color_hex) in enumerate(gates, start=1):
+            child = QTreeWidgetItem(item)
+            child.setText(0, label)
+            child.setData(0, ITEM_ROLE_ID, gate_row)
+            child.setData(0, ITEM_ROLE_TYPE, "gate")
+            child.setForeground(0, QColor(color_hex))
+        if was_expanded or gates:
+            item.setExpanded(True)
+
+    def update_gate_in_sample(
+        self,
+        workspace_index: int,
+        gate_row: int,
+        label: str,
+        color_hex: str,
+    ) -> None:
+        item = self._ws_index_to_item.get(workspace_index)
+        if item is None:
+            return
+        for i in range(item.childCount()):
+            child = item.child(i)
+            if child.data(0, ITEM_ROLE_ID) == gate_row:
+                child.setText(0, label)
+                child.setForeground(0, QColor(color_hex))
+                break
+
+    def select_sample(self, workspace_index: int) -> None:
+        item = self._ws_index_to_item.get(workspace_index)
+        if item is not None:
+            self.sample_tree.setCurrentItem(item)
+            item.setExpanded(True)
+
+    def select_gate_row(self, workspace_index: int, gate_row: int) -> None:
+        item = self._ws_index_to_item.get(workspace_index)
+        if item is None:
+            return
+        for i in range(item.childCount()):
+            child = item.child(i)
+            if child.data(0, ITEM_ROLE_ID) == gate_row:
+                self.sample_tree.setCurrentItem(child)
+                return
+        self.sample_tree.setCurrentItem(item)
+
+    def highlight_group_samples(self, group_name: str) -> None:
+        """Visually select all sample items belonging to group_name."""
+        self.sample_tree.clearSelection()
+        root = self.sample_tree.invisibleRootItem()
+        for i in range(root.childCount()):
+            item = root.child(i)
+            if item.data(0, ITEM_ROLE_TYPE) == "sample" and item.data(0, ITEM_ROLE_GROUP) == group_name:
+                item.setSelected(True)
+
+    def current_sample_workspace_index(self) -> int | None:
+        item = self.sample_tree.currentItem()
+        if item is None:
+            return None
+        if item.data(0, ITEM_ROLE_TYPE) == "sample":
+            val = item.data(0, ITEM_ROLE_ID)
+            return int(val) if val is not None else None
+        if item.data(0, ITEM_ROLE_TYPE) == "gate":
+            parent = item.parent()
+            if parent is not None:
+                val = parent.data(0, ITEM_ROLE_ID)
+                return int(val) if val is not None else None
+        return None
+
+    def selected_sample_workspace_indices(self) -> list[int]:
+        """Return workspace indices of all selected sample items."""
+        result = []
+        for item in self.sample_tree.selectedItems():
+            if item.data(0, ITEM_ROLE_TYPE) == "sample":
+                val = item.data(0, ITEM_ROLE_ID)
+                if val is not None:
+                    result.append(int(val))
+        return result
+
+    def selected_gate_indices(self) -> list[int]:
+        """Return 0-based gate indices for all selected real gate items."""
+        result = []
+        for item in self.sample_tree.selectedItems():
+            if item.data(0, ITEM_ROLE_TYPE) == "gate":
+                gate_row = int(item.data(0, ITEM_ROLE_ID) or 0)
+                if gate_row > 0:
+                    result.append(gate_row - 1)
+        return result
+
+    def selected_item_type(self) -> str | None:
+        """Return "sample", "gate", "mixed", or None if nothing selected."""
+        selected = self.sample_tree.selectedItems()
+        if not selected:
+            return None
+        types = {item.data(0, ITEM_ROLE_TYPE) for item in selected}
+        if len(types) == 1:
+            return next(iter(types))
+        return "mixed"
+
+    # ── Backward-compatibility stubs ────────────────────────────────────
+
+    def reset_gates(self) -> None:
+        pass
 
     def add_gate(self, label: str, *, select: bool = True) -> None:
-        self.gate_list.addItem(label)
-        if select:
-            self.gate_list.setCurrentRow(self.gate_list.count() - 1)
+        pass
 
     def update_gate(self, gate_index: int, label: str, color_hex: str) -> None:
-        item = self.gate_item(gate_index)
-        if item is None:
-            return
+        pass
 
-        item.setText(label)
-        item.setForeground(QColor(color_hex))
-
-    def gate_item(self, gate_index: int) -> QListWidgetItem | None:
-        row = gate_index + 1
-        if row < 1 or row >= self.gate_list.count():
-            return None
-        return self.gate_list.item(row)
-
-    def select_gate_row(self, row: int) -> None:
-        if 0 <= row < self.gate_list.count():
-            self.gate_list.setCurrentRow(row)
+    def gate_item(self, gate_index: int) -> None:
+        return None
 
     def set_population_context(self, origin_name: str, child_names: list[str]) -> None:
-        self.population_origin_label.setText(f"Origin: {origin_name}")
-        if child_names:
-            self.population_children_label.setText(f"Subpopulations: {', '.join(child_names)}")
-        else:
-            self.population_children_label.setText("Subpopulations: —")
+        pass
 
-    def _on_sample_selection_changed(self, row: int) -> None:
-        sample_index = self.current_sample_workspace_index()
-        self.remove_sample_button.setEnabled(sample_index is not None)
-        self.edit_sample_button.setEnabled(sample_index is not None)
-        self.sample_selection_changed.emit(-1 if sample_index is None else sample_index)
+    def set_sample_details(self, details: str) -> None:
+        pass
 
-    def _on_gate_selection_changed(self, row: int) -> None:
-        gate_index = row - 1
-        has_gate = gate_index >= 0
-        self.remove_gate_button.setEnabled(has_gate)
-        self.edit_gate_button.setEnabled(has_gate)
-        self.gate_selection_changed.emit(row)
+    # ── Private helpers ──────────────────────────────────────────────────
 
-    def _on_group_selection_changed(self, current: QListWidgetItem | None, previous: QListWidgetItem | None) -> None:
+    def _add_all_events_child(self, parent_item: QTreeWidgetItem) -> None:
+        child = QTreeWidgetItem(parent_item)
+        child.setText(0, "All events")
+        child.setData(0, ITEM_ROLE_ID, 0)
+        child.setData(0, ITEM_ROLE_TYPE, "gate")
+
+    def _on_tree_selection_changed(
+        self,
+        current: QTreeWidgetItem | None,
+        previous: QTreeWidgetItem | None,
+    ) -> None:
         del previous
-        has_group = current is not None and current.data(ITEM_ROLE_ID) is not None
-        self.remove_group_button.setEnabled(has_group)
-        self.edit_group_button.setEnabled(has_group)
         if current is None:
-            self.group_notes_label.setText("Notes: —")
-            self.group_selection_changed.emit(None)
+            self.remove_sample_button.setEnabled(False)
+            self.more_options_button.setEnabled(False)
             return
-        self.group_selection_changed.emit(current.data(ITEM_ROLE_ID))
 
-    def _on_delete_group_button_clicked(self) -> None:
-        group_name = self.current_group_name()
-        if group_name is not None:
-            self.delete_group_requested.emit(group_name)
-
-    def _on_edit_group_button_clicked(self) -> None:
-        group_name = self.current_group_name()
-        if group_name is not None:
-            self.rename_group_requested.emit(group_name)
-
-    def _on_edit_sample_button_clicked(self) -> None:
-        sample_index = self.current_sample_workspace_index()
-        if sample_index is None:
+        # Multi-select: update buttons only, do NOT emit sample/gate signals.
+        # Emitting would trigger a full refresh that calls setCurrentItem with
+        # ClearAndSelect, which would destroy the multi-selection visually.
+        if len(self.sample_tree.selectedItems()) > 1:
+            self.remove_sample_button.setEnabled(True)
+            self.more_options_button.setEnabled(True)
             return
-        menu = QMenu(self)
-        rename_action = menu.addAction("Rename sample")
-        keyword_action = menu.addAction("Add keyword...")
-        chosen = menu.exec(self.edit_sample_button.mapToGlobal(self.edit_sample_button.rect().bottomLeft()))
-        if chosen is rename_action:
-            self.edit_sample_requested.emit(sample_index)
-        elif chosen is keyword_action:
-            self.add_sample_keyword_requested.emit(sample_index)
 
-    def _on_delete_gate_button_clicked(self) -> None:
-        row = self.gate_list.currentRow()
-        if row > 0:
-            self.delete_gate_context_requested.emit(row - 1)
+        item_type = current.data(0, ITEM_ROLE_TYPE)
+        self.remove_sample_button.setEnabled(True)
+        self.more_options_button.setEnabled(True)
 
-    def _on_edit_gate_button_clicked(self) -> None:
-        row = self.gate_list.currentRow()
-        if row <= 0:
+        if item_type == "sample":
+            workspace_index = int(current.data(0, ITEM_ROLE_ID))
+            if workspace_index != self._active_workspace_index:
+                self._active_workspace_index = workspace_index
+                self.sample_selection_changed.emit(workspace_index)
+            # gate_selection_changed will be triggered by _refresh_gate_panel after sample loads
+
+        elif item_type == "gate":
+            parent = current.parent()
+            if parent is None:
+                return
+            parent_ws_index = int(parent.data(0, ITEM_ROLE_ID))
+            gate_row = int(current.data(0, ITEM_ROLE_ID) or 0)
+            if parent_ws_index != self._active_workspace_index:
+                # Different sample – switch sample first; gate resets to 0
+                self._active_workspace_index = parent_ws_index
+                self.sample_selection_changed.emit(parent_ws_index)
+            else:
+                # Same sample – just switch gate
+                self.gate_selection_changed.emit(gate_row)
+
+    def _on_selection_set_changed(self) -> None:
+        """Keeps button states correct when selection changes without currentItemChanged firing
+        (e.g. Ctrl+click to deselect an item, or going from multi back to single selection)."""
+        selected = self.sample_tree.selectedItems()
+        has_any = bool(selected)
+        self.remove_sample_button.setEnabled(has_any)
+        self.more_options_button.setEnabled(has_any)
+
+    def _on_more_options_clicked(self) -> None:
+        selected = self.sample_tree.selectedItems()
+        if not selected:
             return
-        gate_index = row - 1
-        menu = QMenu(self)
-        rename_action = menu.addAction("Rename gate")
-        color_action = menu.addAction("Change color")
-        chosen = menu.exec(self.edit_gate_button.mapToGlobal(self.edit_gate_button.rect().bottomLeft()))
-        if chosen is rename_action:
-            self.rename_gate_context_requested.emit(gate_index)
-        elif chosen is color_action:
-            self.recolor_gate_context_requested.emit(gate_index)
+        global_pos = self.more_options_button.mapToGlobal(
+            self.more_options_button.rect().bottomLeft()
+        )
+        if len(selected) > 1:
+            self._dispatch_multi_context_menu(global_pos, selected)
+            return
+        item = selected[0]
+        item_type = item.data(0, ITEM_ROLE_TYPE)
+        if item_type == "sample":
+            self._show_sample_context_menu(global_pos, item)
+        elif item_type == "gate":
+            self._show_gate_context_menu(global_pos, item)
 
-    def _on_group_context_menu_requested(self, pos) -> None:
-        item = self.group_list.itemAt(pos)
+    def _on_tree_context_menu(self, pos) -> None:
+        item = self.sample_tree.itemAt(pos)
         if item is None:
             return
+        global_pos = self.sample_tree.mapToGlobal(pos)
+        selected = self.sample_tree.selectedItems()
+        # If right-clicked item is not in current selection, treat as single-select
+        if item not in selected or len(selected) == 1:
+            self.sample_tree.setCurrentItem(item)
+            item_type = item.data(0, ITEM_ROLE_TYPE)
+            if item_type == "sample":
+                self._show_sample_context_menu(global_pos, item)
+            elif item_type == "gate":
+                self._show_gate_context_menu(global_pos, item)
+        else:
+            self._dispatch_multi_context_menu(global_pos, selected)
 
-        group_name = item.data(ITEM_ROLE_ID)
-        if group_name is None:
-            return
+    def _dispatch_multi_context_menu(self, global_pos, items: list[QTreeWidgetItem]) -> None:
+        types = {it.data(0, ITEM_ROLE_TYPE) for it in items}
+        if types == {"sample"}:
+            self._show_multi_sample_context_menu(global_pos, items)
+        elif types == {"gate"}:
+            self._show_multi_gate_context_menu(global_pos, items)
+
+    def _show_sample_context_menu(self, global_pos, item: QTreeWidgetItem) -> None:
+        workspace_index = int(item.data(0, ITEM_ROLE_ID))
+        item_group_name: str = item.data(0, ITEM_ROLE_GROUP) or ""
 
         menu = QMenu(self)
-        add_sample_action = menu.addAction("Add sample to this group")
+
+        # ── Assign to group ──────────────────────────────────
+        assign_menu = menu.addMenu("Assign to group")
+        group_actions: list[tuple[str, object]] = []
+        for group_name, _ in self._available_groups:
+            action = assign_menu.addAction(group_name)
+            group_actions.append((group_name, action))
+        if group_actions:
+            assign_menu.addSeparator()
+        custom_group_action = assign_menu.addAction("Other group...")
+
+        # ── Sample actions ────────────────────────────────────
         menu.addSeparator()
-        rename_action = menu.addAction("Rename group")
-        recolor_action = menu.addAction("Change group color")
-        annotate_action = menu.addAction("Edit annotations")
-        chosen_action = menu.exec(self.group_list.mapToGlobal(pos))
-        if chosen_action is None:
-            return
+        edit_action = menu.addAction("Edit sample...")
+        edit_comp_action = menu.addAction("Edit compensation details")
+        menu.addSeparator()
+        delete_action = menu.addAction("Delete sample")
 
-        self.group_list.setCurrentItem(item)
-        if chosen_action is add_sample_action:
-            self.add_sample_to_group_requested.emit(group_name)
-        elif chosen_action is rename_action:
-            self.rename_group_requested.emit(group_name)
-        elif chosen_action is recolor_action:
-            self.recolor_group_requested.emit(group_name)
-        elif chosen_action is annotate_action:
-            self.annotate_group_requested.emit(group_name)
-
-    def _on_sample_context_menu_requested(self, pos) -> None:
-        item = self.sample_list.itemAt(pos)
-        if item is None:
-            return
-
-        row = self.sample_list.row(item)
-        if row < 0:
-            return
-        sample_index = item.data(ITEM_ROLE_ID)
-        if sample_index is None:
-            return
-
-        menu = QMenu(self)
-        assign_group_menu = menu.addMenu("Assign group")
-        preset_actions: list[tuple[str, object]] = []
-        for group_name in (
-            "Specimen 1",
-            "Specimen 2",
-            "Specimen 3",
-            "Controls",
-            "Unstained",
-            "Compensation",
-            "Ungrouped",
-        ):
-            preset_actions.append((group_name, assign_group_menu.addAction(group_name)))
-        custom_group_action = assign_group_menu.addAction("Custom...")
-        edit_compensation_action = menu.addAction("Edit compensation details")
-
+        # ── Gate propagation ──────────────────────────────────
         menu.addSeparator()
         apply_active_group_action = menu.addAction("Apply active gate to this group")
         apply_all_group_action = menu.addAction("Apply all gates to this group")
         apply_active_all_action = menu.addAction("Apply active gate to all samples")
         apply_all_all_action = menu.addAction("Apply all gates to all samples")
 
-        chosen_action = menu.exec(self.sample_list.mapToGlobal(pos))
-        if chosen_action is None:
+        # ── Group management ──────────────────────────────────
+        if item_group_name:
+            menu.addSeparator()
+            select_group_action = menu.addAction(f"Select all in '{item_group_name}'")
+            group_edit_menu = menu.addMenu(f"Edit group '{item_group_name}'")
+            rename_group_action = group_edit_menu.addAction("Rename group...")
+            recolor_group_action = group_edit_menu.addAction("Change group color...")
+            notes_group_action = group_edit_menu.addAction("Edit notes...")
+            group_edit_menu.addSeparator()
+            delete_group_action = group_edit_menu.addAction("Delete group")
+        else:
+            select_group_action = None
+            rename_group_action = None
+            recolor_group_action = None
+            notes_group_action = None
+            delete_group_action = None
+
+        chosen = menu.exec(global_pos)
+        if chosen is None:
             return
 
-        self.sample_list.setCurrentRow(row)
-        for group_name, action in preset_actions:
-            if chosen_action is action:
-                self.assign_sample_group_requested.emit(int(sample_index), group_name)
+        for group_name, action in group_actions:
+            if chosen is action:
+                self.assign_sample_group_requested.emit(workspace_index, group_name)
                 return
 
-        if chosen_action is custom_group_action:
-            self.assign_custom_sample_group_requested.emit(int(sample_index))
-        elif chosen_action is edit_compensation_action:
-            self.edit_compensation_sample_requested.emit(int(sample_index))
-        elif chosen_action is apply_active_group_action:
-            self.apply_active_gate_to_group_requested.emit(int(sample_index))
-        elif chosen_action is apply_all_group_action:
-            self.apply_all_gates_to_group_requested.emit(int(sample_index))
-        elif chosen_action is apply_active_all_action:
-            self.apply_active_gate_to_all_requested.emit(int(sample_index))
-        elif chosen_action is apply_all_all_action:
-            self.apply_all_gates_to_all_requested.emit(int(sample_index))
+        if chosen is custom_group_action:
+            self.assign_custom_sample_group_requested.emit(workspace_index)
+        elif chosen is edit_action:
+            self.edit_sample_requested.emit(workspace_index)
+        elif chosen is edit_comp_action:
+            self.edit_compensation_sample_requested.emit(workspace_index)
+        elif chosen is delete_action:
+            self.remove_sample_button.click()
+        elif chosen is apply_active_group_action:
+            self.apply_active_gate_to_group_requested.emit(workspace_index)
+        elif chosen is apply_all_group_action:
+            self.apply_all_gates_to_group_requested.emit(workspace_index)
+        elif chosen is apply_active_all_action:
+            self.apply_active_gate_to_all_requested.emit(workspace_index)
+        elif chosen is apply_all_all_action:
+            self.apply_all_gates_to_all_requested.emit(workspace_index)
+        elif select_group_action is not None and chosen is select_group_action:
+            self.select_group_samples_requested.emit(item_group_name)
+        elif rename_group_action is not None and chosen is rename_group_action:
+            self.rename_group_requested.emit(item_group_name)
+        elif recolor_group_action is not None and chosen is recolor_group_action:
+            self.recolor_group_requested.emit(item_group_name)
+        elif notes_group_action is not None and chosen is notes_group_action:
+            self.annotate_group_requested.emit(item_group_name)
+        elif delete_group_action is not None and chosen is delete_group_action:
+            self.delete_group_requested.emit(item_group_name)
 
-    def _on_gate_context_menu_requested(self, pos) -> None:
-        item = self.gate_list.itemAt(pos)
-        if item is None:
+    def _show_gate_context_menu(self, global_pos, item: QTreeWidgetItem) -> None:
+        gate_row = int(item.data(0, ITEM_ROLE_ID) or 0)
+        if gate_row == 0:
             return
+        gate_index = gate_row - 1
 
-        row = self.gate_list.row(item)
-        if row <= 0:
-            return
+        # Get the parent sample's workspace_index for propagation actions
+        parent = item.parent()
+        parent_ws_index: int | None = None
+        if parent is not None and parent.data(0, ITEM_ROLE_TYPE) == "sample":
+            parent_ws_index = int(parent.data(0, ITEM_ROLE_ID))
 
         menu = QMenu(self)
         rename_action = menu.addAction("Rename gate")
@@ -515,21 +527,112 @@ class SamplePanel(QWidget):
         menu.addSeparator()
         export_action = menu.addAction("Export gate events...")
         menu.addSeparator()
+        apply_group_action = menu.addAction("Apply this gate to this group")
+        apply_all_action = menu.addAction("Apply this gate to all samples")
+        menu.addSeparator()
         delete_action = menu.addAction("Delete gate")
-        chosen_action = menu.exec(self.gate_list.mapToGlobal(pos))
-        if chosen_action is None:
+
+        chosen = menu.exec(global_pos)
+        if chosen is None:
             return
 
-        self.gate_list.setCurrentRow(row)
-        gate_index = row - 1
-        if chosen_action is rename_action:
+        if chosen is rename_action:
             self.rename_gate_context_requested.emit(gate_index)
-        elif chosen_action is recolor_action:
+        elif chosen is recolor_action:
             self.recolor_gate_context_requested.emit(gate_index)
-        elif chosen_action is export_action:
+        elif chosen is export_action:
             self.export_gate_context_requested.emit(gate_index)
-        elif chosen_action is delete_action:
+        elif chosen is delete_action:
             self.delete_gate_context_requested.emit(gate_index)
+        elif chosen is apply_group_action and parent_ws_index is not None:
+            self.apply_active_gate_to_group_requested.emit(parent_ws_index)
+        elif chosen is apply_all_action and parent_ws_index is not None:
+            self.apply_active_gate_to_all_requested.emit(parent_ws_index)
+
+    def _show_multi_sample_context_menu(self, global_pos, items: list[QTreeWidgetItem]) -> None:
+        from PySide6.QtWidgets import QInputDialog, QMessageBox
+        ws_indices = [int(item.data(0, ITEM_ROLE_ID)) for item in items]
+        count = len(ws_indices)
+        menu = QMenu(self)
+
+        assign_menu = menu.addMenu(f"Assign {count} samples to group")
+        group_actions: list[tuple[str, object]] = []
+        for group_name, _ in self._available_groups:
+            action = assign_menu.addAction(group_name)
+            group_actions.append((group_name, action))
+        if group_actions:
+            assign_menu.addSeparator()
+        custom_group_action = assign_menu.addAction("Other group...")
+
+        menu.addSeparator()
+        apply_active_action = menu.addAction(f"Apply active gate to {count} selected samples")
+        apply_all_action = menu.addAction(f"Apply all gates to {count} selected samples")
+        menu.addSeparator()
+        delete_action = menu.addAction(f"Delete {count} selected samples")
+
+        chosen = menu.exec(global_pos)
+        if chosen is None:
+            return
+
+        for group_name, action in group_actions:
+            if chosen is action:
+                self.assign_samples_group_batch_requested.emit(ws_indices, group_name)
+                return
+
+        if chosen is custom_group_action:
+            group_name, accepted = QInputDialog.getText(
+                self, "Assign group", "Group name:"
+            )
+            if not accepted:
+                return
+            normalized = group_name.strip()
+            if not normalized:
+                QMessageBox.warning(self, "Assign group", "Group name cannot be empty.")
+                return
+            self.assign_samples_group_batch_requested.emit(ws_indices, normalized)
+        elif chosen is apply_active_action:
+            self.apply_active_gate_to_selected_requested.emit(ws_indices)
+        elif chosen is apply_all_action:
+            self.apply_all_gates_to_selected_requested.emit(ws_indices)
+        elif chosen is delete_action:
+            self.delete_samples_batch_requested.emit(ws_indices)
+
+    def _show_multi_gate_context_menu(self, global_pos, items: list[QTreeWidgetItem]) -> None:
+        gate_items = [item for item in items if int(item.data(0, ITEM_ROLE_ID) or 0) > 0]
+        if not gate_items:
+            return
+        gate_indices = [int(item.data(0, ITEM_ROLE_ID)) - 1 for item in gate_items]
+        count = len(gate_indices)
+
+        # Propagation only makes sense when all gates belong to the same parent sample
+        parent_ws_index: int | None = None
+        parent_ids = set()
+        for item in gate_items:
+            parent = item.parent()
+            if parent and parent.data(0, ITEM_ROLE_TYPE) == "sample":
+                parent_ids.add(int(parent.data(0, ITEM_ROLE_ID)))
+        if len(parent_ids) == 1:
+            parent_ws_index = next(iter(parent_ids))
+
+        menu = QMenu(self)
+        apply_group_action = None
+        apply_all_action = None
+        if parent_ws_index is not None:
+            apply_group_action = menu.addAction(f"Apply {count} gates to this group")
+            apply_all_action = menu.addAction(f"Apply {count} gates to all samples")
+            menu.addSeparator()
+        delete_action = menu.addAction(f"Delete {count} selected gates")
+
+        chosen = menu.exec(global_pos)
+        if chosen is None:
+            return
+
+        if apply_group_action is not None and chosen is apply_group_action:
+            self.apply_gates_to_group_batch_requested.emit(parent_ws_index, gate_indices)
+        elif apply_all_action is not None and chosen is apply_all_action:
+            self.apply_gates_to_all_batch_requested.emit(parent_ws_index, gate_indices)
+        elif chosen is delete_action:
+            self.delete_gates_batch_requested.emit(gate_indices)
 
 
 class InspectorPanel(QWidget):

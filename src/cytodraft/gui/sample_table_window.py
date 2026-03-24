@@ -704,7 +704,13 @@ class SampleTableWindow(QDialog):
         if not sample_indices:
             return
 
+        is_multi = len(sample_indices) > 1
+        source_ws = self.workspace.samples[sample_indices[0]]
+        item_group = source_ws.group_name
+
         menu = QMenu(self)
+
+        # ── Keyword copy (column-specific) ───────────────────────
         keyword_name = self._keyword_name_for_column(col)
         if keyword_name is not None:
             copy_group_action = menu.addAction(f'Copy "{keyword_name}" to same group')
@@ -714,29 +720,85 @@ class SampleTableWindow(QDialog):
             copy_group_action = None
             copy_all_action = None
 
-        remove_group_action = menu.addAction("Remove from group")
-        move_group_action = menu.addAction("Move to another group...")
-        menu.addSeparator()
-        delete_samples_action = menu.addAction("Delete sample(s)")
+        # ── Assign to group ───────────────────────────────────────
+        assign_menu = menu.addMenu("Assign to group")
+        group_actions: list[tuple[str, object]] = []
+        for gname in sorted(self.workspace.groups):
+            action = assign_menu.addAction(gname)
+            group_actions.append((gname, action))
+        if group_actions:
+            assign_menu.addSeparator()
+        custom_group_action = assign_menu.addAction("Other group...")
 
-        chosen_action = menu.exec(self._table.viewport().mapToGlobal(pos))
-        if chosen_action is None:
+        # ── Sample actions ────────────────────────────────────────
+        menu.addSeparator()
+        edit_action = menu.addAction("Edit sample name...") if not is_multi else None
+        menu.addSeparator()
+        delete_action = menu.addAction(f"Delete {len(sample_indices)} sample(s)")
+
+        # ── Gate propagation (single source) ─────────────────────
+        has_gates = bool(source_ws.gates)
+        if has_gates:
+            menu.addSeparator()
+            apply_all_group_action = menu.addAction("Apply all gates to this group")
+            apply_all_all_action = menu.addAction("Apply all gates to all samples")
+        else:
+            apply_all_group_action = None
+            apply_all_all_action = None
+
+        # ── Group management ──────────────────────────────────────
+        menu.addSeparator()
+        select_group_action = menu.addAction(f"Select all in '{item_group}'")
+        group_edit_menu = menu.addMenu(f"Edit group '{item_group}'")
+        rename_group_action = group_edit_menu.addAction("Rename group...")
+        recolor_group_action = group_edit_menu.addAction("Change group color...")
+        notes_group_action = group_edit_menu.addAction("Edit notes...")
+        group_edit_menu.addSeparator()
+        delete_group_action = group_edit_menu.addAction("Delete group")
+
+        chosen = menu.exec(self._table.viewport().mapToGlobal(pos))
+        if chosen is None:
             return
 
-        if chosen_action is copy_group_action:
+        if copy_group_action and chosen is copy_group_action:
             self._copy_keyword_value(row, col, scope="group")
             return
-        if chosen_action is copy_all_action:
+        if copy_all_action and chosen is copy_all_action:
             self._copy_keyword_value(row, col, scope="all")
             return
-        if chosen_action is remove_group_action:
-            self._remove_samples_from_group(sample_indices)
-            return
-        if chosen_action is move_group_action:
+        for gname, action in group_actions:
+            if chosen is action:
+                self._assign_samples_to_group(sample_indices, gname)
+                return
+        if chosen is custom_group_action:
             self._move_samples_to_group_dialog(sample_indices)
             return
-        if chosen_action is delete_samples_action:
+        if edit_action and chosen is edit_action:
+            self._rename_sample_dialog(sample_indices[0])
+            return
+        if chosen is delete_action:
             self._delete_samples(sample_indices)
+            return
+        if apply_all_group_action and chosen is apply_all_group_action:
+            self._apply_all_gates_from(sample_indices[0], scope="group")
+            return
+        if apply_all_all_action and chosen is apply_all_all_action:
+            self._apply_all_gates_from(sample_indices[0], scope="all")
+            return
+        if chosen is select_group_action:
+            self._select_all_in_group(item_group)
+            return
+        if chosen is rename_group_action:
+            self._rename_group_dialog(item_group)
+            return
+        if chosen is recolor_group_action:
+            self._recolor_group_dialog(item_group)
+            return
+        if chosen is notes_group_action:
+            self._edit_group_notes_dialog(item_group)
+            return
+        if chosen is delete_group_action:
+            self._delete_group_dialog(item_group)
 
     def _rebuild_gate_browser(self) -> None:
         self._updating_gate_browser = True
@@ -934,12 +996,25 @@ class SampleTableWindow(QDialog):
         if not normalized:
             QMessageBox.warning(self, "Create group", "Group name cannot be empty.")
             return
-        self.workspace.ensure_group(normalized)
+        self._ensure_group_with_color(normalized)
         self.refresh()
         row = self._group_list.row(self._find_group_list_item(normalized))
         if row >= 0:
             self._group_list.setCurrentRow(row)
         self._notify_workspace_changed(refresh_table=False)
+
+    def _ensure_group_with_color(self, group_name: str) -> None:
+        """Create group if new, then prompt for color."""
+        is_new = group_name not in self.workspace.groups
+        self.workspace.ensure_group(group_name)
+        if is_new:
+            color = QColorDialog.getColor(
+                QColor(self.workspace.groups[group_name].color_hex),
+                self,
+                f"Select color for '{group_name}'",
+            )
+            if color.isValid():
+                self.workspace.groups[group_name].color_hex = color.name().lower()
 
     def _on_rename_group(self) -> None:
         group_name = self._current_group_name_for_actions()
@@ -1078,7 +1153,7 @@ class SampleTableWindow(QDialog):
         group_name, ok = QInputDialog.getItem(
             self,
             "Move samples to group",
-            "Target group:",
+            "Target group (or type a new group name):",
             current_groups,
             current=max(0, current_groups.index(initial_group)) if initial_group in current_groups else 0,
             editable=True,
@@ -1086,7 +1161,104 @@ class SampleTableWindow(QDialog):
         if not ok:
             return
         normalized = group_name.strip() or DEFAULT_GROUP_NAME
+        self._ensure_group_with_color(normalized)
         self._assign_samples_to_group(sample_indices, normalized)
+
+    def _rename_sample_dialog(self, sample_index: int) -> None:
+        if sample_index < 0 or sample_index >= len(self.workspace.samples):
+            return
+        ws = self.workspace.samples[sample_index]
+        new_name, ok = QInputDialog.getText(
+            self, "Rename sample", "Sample name:", text=ws.sample_name
+        )
+        if not ok:
+            return
+        ws.display_name_override = new_name.strip() or None
+        self._notify_workspace_changed()
+
+    def _apply_all_gates_from(self, source_index: int, *, scope: str) -> None:
+        if source_index < 0 or source_index >= len(self.workspace.samples):
+            return
+        source = self.workspace.samples[source_index]
+        gate_names = [g.name for g in source.gates]
+        if not gate_names:
+            return
+        target_group = source.group_name if scope == "group" else None
+        self._apply_selected_gates(source_index, gate_names, target_group)
+
+    def _select_all_in_group(self, group_name: str) -> None:
+        self._table.clearSelection()
+        for row, sample_index in enumerate(self._row_sample_indices):
+            if self.workspace.samples[sample_index].group_name == group_name:
+                self._table.selectRow(row)
+
+    def _rename_group_dialog(self, group_name: str) -> None:
+        group = self.workspace.groups.get(group_name)
+        if group is None:
+            return
+        new_name, ok = QInputDialog.getText(
+            self, "Rename group", "Group name:", text=group.name
+        )
+        if not ok:
+            return
+        normalized = new_name.strip()
+        if not normalized:
+            QMessageBox.warning(self, "Rename group", "Group name cannot be empty.")
+            return
+        self.workspace.rename_group(group_name, normalized)
+        current_filter = self._group_combo.currentData()
+        self.refresh()
+        if current_filter == group_name:
+            idx = self._group_combo.findData(normalized)
+            if idx >= 0:
+                self._group_combo.setCurrentIndex(idx)
+        self._notify_workspace_changed(refresh_table=False)
+
+    def _recolor_group_dialog(self, group_name: str) -> None:
+        group = self.workspace.groups.get(group_name)
+        if group is None:
+            return
+        color = QColorDialog.getColor(
+            QColor(group.color_hex), self, f"Select color for '{group_name}'"
+        )
+        if not color.isValid():
+            return
+        group.color_hex = color.name().lower()
+        self.refresh()
+        self._notify_workspace_changed(refresh_table=False)
+
+    def _edit_group_notes_dialog(self, group_name: str) -> None:
+        group = self.workspace.groups.get(group_name)
+        if group is None:
+            return
+        notes, ok = QInputDialog.getMultiLineText(
+            self, "Group notes", "Notes:", text=group.notes
+        )
+        if not ok:
+            return
+        group.notes = notes.strip()
+        self._refresh_group_notes()
+        self._notify_workspace_changed(refresh_table=False)
+
+    def _delete_group_dialog(self, group_name: str) -> None:
+        if group_name in {DEFAULT_GROUP_NAME, COMPENSATION_GROUP_NAME}:
+            QMessageBox.information(
+                self,
+                "Delete group",
+                f'The "{group_name}" group is reserved and cannot be deleted.',
+            )
+            return
+        answer = QMessageBox.question(
+            self,
+            "Delete group",
+            f'Delete the "{group_name}" group?\nSamples will be moved to "{DEFAULT_GROUP_NAME}".',
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self.workspace.delete_group(group_name, fallback_group_name=DEFAULT_GROUP_NAME)
+        self.refresh()
+        self._notify_workspace_changed(refresh_table=False)
 
     def _delete_samples(self, sample_indices: list[int]) -> None:
         if not sample_indices:
