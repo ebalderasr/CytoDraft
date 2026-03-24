@@ -237,6 +237,7 @@ class MainWindow(QMainWindow):
         self.sample_panel.delete_gates_batch_requested.connect(self.on_delete_gates_batch)
         self.sample_panel.apply_gates_to_group_batch_requested.connect(self.on_apply_gates_to_group_batch)
         self.sample_panel.apply_gates_to_all_batch_requested.connect(self.on_apply_gates_to_all_batch)
+        self.sample_panel.select_equivalent_gates_requested.connect(self.on_select_equivalent_gates)
         self.gate_toolbar.draw_requested.connect(self.on_create_gate)
         self.gate_toolbar.apply_requested.connect(self.on_apply_gate)
         self.gate_toolbar.clear_requested.connect(self.on_clear_draft_gate)
@@ -1728,6 +1729,32 @@ class MainWindow(QMainWindow):
                 f"Deleted {gate.name} and {len(names_to_delete) - 1} descendant gates",
                 4000,
             )
+
+    def on_select_equivalent_gates(self) -> None:
+        """Select all gate items with the same name as the active gate, across all samples."""
+        if self.active_gate is None:
+            self.statusBar().showMessage("Select a gate first to find its equivalents", 4000)
+            return
+
+        gate_name = self.active_gate.name
+        pairs: list[tuple[int, int]] = []
+        for ws_idx, ws_sample in enumerate(self.workspace.samples):
+            for gate_row, gate in enumerate(ws_sample.gates, start=1):
+                if gate.name == gate_name:
+                    pairs.append((ws_idx, gate_row))
+
+        if not pairs:
+            self.statusBar().showMessage(f"No equivalent gates found for '{gate_name}'", 4000)
+            return
+
+        self.sample_panel.select_gate_items_cross_sample(pairs)
+
+        if self._sample_table_window is not None and self._sample_table_window.isVisible():
+            self._sample_table_window.select_samples_with_gate(gate_name)
+
+        self.statusBar().showMessage(
+            f"Selected {len(pairs)} equivalent gate(s) named '{gate_name}'", 4000
+        )
 
     # ------------------------------------------------------------------
     # Gate editing: load existing gate geometry into an editable ROI

@@ -92,6 +92,8 @@ class SamplePanel(QWidget):
     delete_gates_batch_requested = Signal(object)               # list[int] gate_indices
     apply_gates_to_group_batch_requested = Signal(int, object)  # (source_ws_index, list[int])
     apply_gates_to_all_batch_requested = Signal(int, object)    # (source_ws_index, list[int])
+    # Tree view signals
+    select_equivalent_gates_requested = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -123,23 +125,53 @@ class SamplePanel(QWidget):
         )
         self.remove_sample_button.setEnabled(False)
         self.more_options_button = _make_manager_button(
-            "⋯  Options",
+            "⋯",
             tooltip="Show all actions for the selected item",
             variant="subtle",
+            fixed_width=36,
         )
         self.more_options_button.setEnabled(False)
 
-        toolbar_row = QHBoxLayout()
-        toolbar_row.setContentsMargins(0, 0, 0, 0)
-        toolbar_row.setSpacing(6)
-        toolbar_row.addWidget(self.add_sample_button)
-        toolbar_row.addWidget(self.remove_sample_button)
-        toolbar_row.addWidget(self.more_options_button)
+        self.collapse_all_button = _make_manager_button(
+            "▸",
+            tooltip="Collapse all samples",
+            variant="subtle",
+            fixed_width=36,
+        )
+        self.expand_all_button = _make_manager_button(
+            "▾",
+            tooltip="Expand all samples",
+            variant="subtle",
+            fixed_width=36,
+        )
+        self.select_equivalent_button = _make_manager_button(
+            "≡",
+            tooltip="Select equivalent gates (same name) across all samples",
+            variant="subtle",
+            fixed_width=36,
+        )
+
+        management_row = QHBoxLayout()
+        management_row.setContentsMargins(0, 0, 0, 0)
+        management_row.setSpacing(4)
+        management_row.addWidget(self.add_sample_button)
+        management_row.addWidget(self.remove_sample_button)
+        management_row.addWidget(self.more_options_button)
+        management_row.addStretch(1)
+
+        view_row = QHBoxLayout()
+        view_row.setContentsMargins(0, 0, 0, 0)
+        view_row.setSpacing(4)
+        view_row.addWidget(self.collapse_all_button)
+        view_row.addWidget(self.expand_all_button)
+        view_row.addWidget(self.select_equivalent_button)
+        view_row.addStretch(1)
 
         layout = QVBoxLayout()
         layout.setContentsMargins(2, 4, 2, 2)
-        layout.setSpacing(4)
-        layout.addLayout(toolbar_row)
+        layout.setSpacing(2)
+        layout.addLayout(management_row)
+        layout.addLayout(view_row)
         layout.addWidget(self.sample_tree)
         self.setLayout(layout)
 
@@ -147,6 +179,9 @@ class SamplePanel(QWidget):
         self.sample_tree.itemSelectionChanged.connect(self._on_selection_set_changed)
         self.sample_tree.customContextMenuRequested.connect(self._on_tree_context_menu)
         self.more_options_button.clicked.connect(self._on_more_options_clicked)
+        self.collapse_all_button.clicked.connect(self.sample_tree.collapseAll)
+        self.expand_all_button.clicked.connect(self.sample_tree.expandAll)
+        self.select_equivalent_button.clicked.connect(self.select_equivalent_gates_requested.emit)
 
     # ── Public API ──────────────────────────────────────────────────────
 
@@ -295,6 +330,24 @@ class SamplePanel(QWidget):
                 if gate_row > 0:
                     result.append(gate_row - 1)
         return result
+
+    def select_gate_items_cross_sample(self, pairs: list[tuple[int, int]]) -> None:
+        """Select gate items at (workspace_index, gate_row) pairs across all samples.
+
+        Expands parent samples as needed so the selected items are visible.
+        """
+        with QSignalBlocker(self.sample_tree):
+            self.sample_tree.clearSelection()
+            for ws_idx, gate_row in pairs:
+                sample_item = self._ws_index_to_item.get(ws_idx)
+                if sample_item is None:
+                    continue
+                for i in range(sample_item.childCount()):
+                    child = sample_item.child(i)
+                    if child.data(0, ITEM_ROLE_ID) == gate_row:
+                        sample_item.setExpanded(True)
+                        child.setSelected(True)
+                        break
 
     def selected_item_type(self) -> str | None:
         """Return "sample", "gate", "mixed", or None if nothing selected."""

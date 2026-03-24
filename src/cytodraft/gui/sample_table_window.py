@@ -197,6 +197,11 @@ class SampleTableWindow(QDialog):
         self._move_group_btn.setProperty("variant", "subtle")
         self._move_group_btn.clicked.connect(self._on_move_selected_samples_to_group)
 
+        self._select_equiv_gate_btn = QPushButton("≡ Match gate")
+        self._select_equiv_gate_btn.setProperty("variant", "subtle")
+        self._select_equiv_gate_btn.setToolTip("Select all samples that have a specific gate name")
+        self._select_equiv_gate_btn.clicked.connect(self._on_select_equivalent_gates)
+
         self._delete_samples_btn = QPushButton("Delete samples")
         self._delete_samples_btn.setProperty("variant", "danger")
         self._delete_samples_btn.clicked.connect(self._on_delete_selected_samples)
@@ -220,6 +225,7 @@ class SampleTableWindow(QDialog):
         action_row.addWidget(self._remove_stat_btn)
         action_row.addWidget(self._vline())
         action_row.addWidget(self._move_group_btn)
+        action_row.addWidget(self._select_equiv_gate_btn)
         action_row.addWidget(self._delete_samples_btn)
         action_row.addStretch(1)
         action_row.addWidget(self._refresh_btn)
@@ -1347,6 +1353,41 @@ class SampleTableWindow(QDialog):
             QMessageBox.information(self, "Move to group", "Select one or more samples first.")
             return
         self._move_samples_to_group_dialog(sample_indices)
+
+    def _on_select_equivalent_gates(self) -> None:
+        """Prompt for a gate name and select all table rows whose sample has that gate."""
+        gate_names: list[str] = []
+        seen: set[str] = set()
+        for ws_sample in self.workspace.samples:
+            for gate in ws_sample.gates:
+                if gate.name not in seen:
+                    gate_names.append(gate.name)
+                    seen.add(gate.name)
+        gate_names.sort()
+
+        if not gate_names:
+            QMessageBox.information(self, "Match gate", "No gates found in the workspace.")
+            return
+
+        gate_name, accepted = QInputDialog.getItem(
+            self, "Match gate", "Select gate name to highlight:", gate_names, 0, False
+        )
+        if not accepted:
+            return
+        self.select_samples_with_gate(gate_name)
+
+    def select_samples_with_gate(self, gate_name: str) -> None:
+        """Select all table rows whose sample has a gate with the given name."""
+        self._table.clearSelection()
+        for row, ws_idx in enumerate(self._row_sample_indices):
+            if ws_idx < 0 or ws_idx >= len(self.workspace.samples):
+                continue
+            ws_sample = self.workspace.samples[ws_idx]
+            if any(g.name == gate_name for g in ws_sample.gates):
+                for col in range(self._table.columnCount()):
+                    item = self._table.item(row, col)
+                    if item:
+                        item.setSelected(True)
 
     def _on_gate_tree_context_menu(self, pos) -> None:
         source_sample_index = self._single_selected_sample_index()
