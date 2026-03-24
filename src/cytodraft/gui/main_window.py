@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QInputDialog,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QSplitter,
     QToolBar,
