@@ -93,6 +93,15 @@ class WorkspaceSample:
 
 
 @dataclass(slots=True)
+class SavedSpilloverMatrix:
+    """A named snapshot of a spillover matrix for comparison / rollback."""
+    name: str
+    channels: list[str]
+    values: list[float]      # n×n flat row-major; diagonal = 1.0
+    created_at: str = ""     # display string, e.g. "2024-01-15 14:32"
+
+
+@dataclass(slots=True)
 class WorkspaceState:
     samples: list[WorkspaceSample] = field(default_factory=list)
     groups: dict[str, WorkspaceGroup] = field(default_factory=dict)
@@ -100,10 +109,11 @@ class WorkspaceState:
     universal_negative_sample_index: int | None = None
     keyword_columns: list[str] = field(default_factory=list)
     statistic_columns: list[WorkspaceStatisticColumn] = field(default_factory=list)
-    # Spillover / compensation matrix (user-edited override; plain Python for
-    # easy serialisation – no numpy in the model layer).
+    # Active spillover matrix applied to all samples.
     spillover_channels: list[str] = field(default_factory=list)
     spillover_values: list[float] = field(default_factory=list)  # n×n flat row-major
+    # Named matrix snapshots for comparison / rollback.
+    saved_spillover_matrices: list[SavedSpilloverMatrix] = field(default_factory=list)
 
     @property
     def has_spillover(self) -> bool:
@@ -117,6 +127,34 @@ class WorkspaceState:
     def clear_spillover(self) -> None:
         self.spillover_channels = []
         self.spillover_values = []
+
+    def save_spillover_matrix(
+        self,
+        name: str,
+        channels: list[str],
+        values: list[float],
+        created_at: str = "",
+    ) -> None:
+        """Save or replace a named spillover matrix snapshot."""
+        for m in self.saved_spillover_matrices:
+            if m.name == name:
+                m.channels = list(channels)
+                m.values = list(values)
+                m.created_at = created_at
+                return
+        self.saved_spillover_matrices.append(
+            SavedSpilloverMatrix(
+                name=name,
+                channels=list(channels),
+                values=list(values),
+                created_at=created_at,
+            )
+        )
+
+    def delete_spillover_matrix(self, name: str) -> None:
+        self.saved_spillover_matrices = [
+            m for m in self.saved_spillover_matrices if m.name != name
+        ]
 
     def add_keyword_column(self, name: str) -> None:
         if name not in self.keyword_columns:

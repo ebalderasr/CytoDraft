@@ -35,6 +35,7 @@ from cytodraft.models.workspace import (
     CompensationPopulationSelection,
     CompensationSampleMetadata,
     DEFAULT_GROUP_COLOR,
+    SavedSpilloverMatrix,
     WorkspaceGroup,
     WorkspaceSample,
     WorkspaceState,
@@ -164,6 +165,15 @@ def save_workspace(workspace: WorkspaceState, path: Path) -> None:
         "keyword_columns": list(workspace.keyword_columns),
         "spillover_channels": list(workspace.spillover_channels),
         "spillover_values": list(workspace.spillover_values),
+        "saved_spillover_matrices": [
+            {
+                "name": m.name,
+                "channels": list(m.channels),
+                "values": list(m.values),
+                "created_at": m.created_at,
+            }
+            for m in workspace.saved_spillover_matrices
+        ],
         "statistic_columns": [
             {
                 "statistic_key": col.statistic_key,
@@ -447,6 +457,18 @@ def load_workspace(
     spill_values = doc.get("spillover_values", [])
     if spill_channels and len(spill_values) == len(spill_channels) ** 2:
         workspace.set_spillover(spill_channels, spill_values)
+
+    # Named saved matrices
+    for m_data in doc.get("saved_spillover_matrices", []):
+        ch = m_data.get("channels", [])
+        vals = m_data.get("values", [])
+        if ch and len(vals) == len(ch) ** 2:
+            workspace.save_spillover_matrix(
+                name=m_data.get("name", "Unnamed"),
+                channels=ch,
+                values=vals,
+                created_at=m_data.get("created_at", ""),
+            )
 
     # ---- Load samples ----
     original_to_loaded: dict[int, int] = {}

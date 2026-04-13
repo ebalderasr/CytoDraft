@@ -92,6 +92,17 @@ def _vline() -> QFrame:
     return sep
 
 
+def _find_channel_idx(sample, channel_name: str) -> int | None:
+    """Return the column index in sample.events for a channel, matched by display
+    name, PNS (fluorochrome label) or PNN (detector name), case-insensitive."""
+    lo = channel_name.strip().lower()
+    for ch in sample.channels:
+        for label in (ch.display_name, ch.pns, ch.pnn):
+            if label.strip().lower() == lo:
+                return ch.index
+    return None
+
+
 # ── Spillover matrix table ─────────────────────────────────────────────────────
 
 class _MatrixTable(QTableWidget):
@@ -117,13 +128,15 @@ class _MatrixTable(QTableWidget):
         self.setVerticalHeaderLabels(channels)
         for r in range(n):
             for c in range(n):
-                item = QTableWidgetItem(f"{matrix[r, c]:.4f}")
-                item.setTextAlignment(Qt.AlignCenter)
                 if r == c:
+                    item = QTableWidgetItem("—")
+                    item.setTextAlignment(Qt.AlignCenter)
                     item.setFlags(item.flags() & ~Qt.ItemIsEditable)
                     item.setBackground(_DIAG_BG)
-                    item.setForeground(QColor("#166534"))
+                    item.setForeground(QColor("#9ca3af"))
                 else:
+                    item = QTableWidgetItem(f"{matrix[r, c]:.4f}")
+                    item.setTextAlignment(Qt.AlignCenter)
                     item.setBackground(_EDIT_BG)
                 self.setItem(r, c, item)
         self.resizeColumnsToContents()
@@ -142,9 +155,13 @@ class _MatrixTable(QTableWidget):
             for c in range(n):
                 item = self.item(r, c)
                 try:
-                    values.append(float(item.text()) if item else (100.0 if r == c else 0.0))
+                    txt = item.text() if item else ""
+                    if r == c or txt == "—":
+                        values.append(1.0 if r == c else 0.0)
+                    else:
+                        values.append(float(txt))
                 except ValueError:
-                    values.append(100.0 if r == c else 0.0)
+                    values.append(1.0 if r == c else 0.0)
         return headers, flat_to_matrix(values, n)
 
     def _on_item_changed(self, item: QTableWidgetItem) -> None:
@@ -155,7 +172,7 @@ class _MatrixTable(QTableWidget):
         except ValueError:
             val = 0.0
             item.setText("0.0000")
-        val = max(-200.0, min(200.0, val))
+        val = max(-2.0, min(2.0, val))
         self.matrix_changed.emit()
 
 
@@ -197,10 +214,12 @@ class _PairScatterGrid(QWidget):
         self._raw_sub: np.ndarray | None = None    # raw events, subsampled
         self._comp_sub: np.ndarray | None = None   # compensated events, subsampled
 
-        # Grid state
+        # Grid state: keyed by (ch_x_list_index, ch_y_list_index)
         self._n_grid: int = 0
-        self._raw_items: list[list[pg.ScatterPlotItem | None]] = []
-        self._comp_items: list[list[pg.ScatterPlotItem | None]] = []
+        self._scatter_items: dict[
+            tuple[int, int],
+            tuple[pg.ScatterPlotItem | None, pg.ScatterPlotItem | None],
+        ] = {}
 
         self._build_ui()
 
@@ -304,10 +323,9 @@ class _PairScatterGrid(QWidget):
     # ── Raw/comp visibility toggle (no rebuild needed) ─────────────────────────
 
     def _on_raw_toggled(self, checked: bool) -> None:
-        for row_items in self._raw_items:
-            for item in row_items:
-                if item is not None:
-                    item.setVisible(checked)
+        for raw_item, _ in self._scatter_items.values():
+            if raw_item is not None:
+                raw_item.setVisible(checked)
 
     # ── Grid build ─────────────────────────────────────────────────────────────
 
@@ -316,8 +334,7 @@ class _PairScatterGrid(QWidget):
             child = self._grid_layout.takeAt(0)
             if child.widget():
                 child.widget().deleteLater()
-        self._raw_items = []
-        self._comp_items = []
+        self._scatter_items = {}
         self._n_grid = 0
         self._cached_sample_idx = None
         self._cached_channels = []
@@ -373,39 +390,53 @@ class _PairScatterGrid(QWidget):
         self._recompute_comp_sub()
 
         self._n_grid = n
-        self._raw_items = [[None] * n for _ in range(n)]
-        self._comp_items = [[None] * n for _ in range(n)]
+        self._scatter_items = {}
 
-        # Cell size: smaller grids get larger plots
-        cell_size = max(90, min(180, 900 // n))
+        # Lower-triangle layout: (N-1)×(N-1) grid.
+        # grid_col c  → X axis = channels[c]
+        # grid_row r  → Y axis = channels[r+1]
+        # Show cell only when c <= r  (X-channel index < Y-channel index)
+        grid_n = n - 1
+        if grid_n < 1:
+            self._info_lbl.setText("Need at least 2 channels to show scatter plots.")
+            return
 
+        # Cell size scales with grid size
+        cell_size = max(100, min(220, 700 // grid_n))
         show_raw = self._raw_check.isChecked()
 
-        for r in range(n):
-            for c in range(n):
+        for grid_r in range(grid_n):
+            for grid_c in range(grid_n):
+                if grid_c > grid_r:
+                    # Upper triangle: empty placeholder keeps grid alignment
+                    ph = QWidget()
+                    ph.setFixedSize(cell_size, cell_size)
+                    self._grid_layout.addWidget(ph, grid_r, grid_c)
+                    continue
+
+                ch_x_idx = grid_c        # index into channels / indices
+                ch_y_idx = grid_r + 1    # index into channels / indices
+                xi = indices[ch_x_idx]
+                yi = indices[ch_y_idx]
+
                 plot = self._make_cell_plot(cell_size)
+                raw_item, comp_item = self._fill_scatter_cell(
+                    plot, xi, yi,
+                    edge_left=(grid_c == 0),
+                    edge_bottom=(grid_r == grid_n - 1),
+                    ch_x=channels[ch_x_idx],
+                    ch_y=channels[ch_y_idx],
+                    show_raw=show_raw,
+                )
+                self._scatter_items[(ch_x_idx, ch_y_idx)] = (raw_item, comp_item)
+                self._grid_layout.addWidget(plot, grid_r, grid_c)
 
-                if r == c:
-                    self._fill_diagonal(plot, channels[r])
-                else:
-                    xi = indices[c]
-                    yi = indices[r]
-                    self._fill_scatter_cell(
-                        plot, r, c, xi, yi,
-                        edge_left=(c == 0),
-                        edge_bottom=(r == n - 1),
-                        ch_x=channels[c],
-                        ch_y=channels[r],
-                        show_raw=show_raw,
-                    )
-
-                self._grid_layout.addWidget(plot, r, c)
-
+        pairs = n * (n - 1) // 2
         suffix = ""
         if len(self._spill_channels) > n:
             suffix = f" (first {n} of {len(self._spill_channels)} channels shown)"
         self._info_lbl.setText(
-            f"{n}×{n} grid · {len(self._sel):,} events per plot{suffix}"
+            f"{pairs} scatter plots · {len(self._sel):,} events per plot{suffix}"
         )
 
     @staticmethod
@@ -434,8 +465,6 @@ class _PairScatterGrid(QWidget):
     def _fill_scatter_cell(
         self,
         plot: pg.PlotWidget,
-        r: int,
-        c: int,
         xi: int,
         yi: int,
         *,
@@ -444,8 +473,8 @@ class _PairScatterGrid(QWidget):
         ch_x: str,
         ch_y: str,
         show_raw: bool,
-    ) -> None:
-        """Off-diagonal cell: raw + compensated scatter."""
+    ) -> tuple[pg.ScatterPlotItem | None, pg.ScatterPlotItem | None]:
+        """Fill an off-diagonal scatter cell; return (raw_item, comp_item)."""
         if not edge_left:
             plot.hideAxis("left")
         else:
@@ -478,8 +507,7 @@ class _PairScatterGrid(QWidget):
             )
             plot.addItem(comp_item)
 
-        self._raw_items[r][c] = raw_item
-        self._comp_items[r][c] = comp_item
+        return raw_item, comp_item
 
     # ── In-place compensation update ───────────────────────────────────────────
 
@@ -510,22 +538,15 @@ class _PairScatterGrid(QWidget):
 
     def _update_scatter_data(self) -> None:
         """Update compensated scatter item data in-place (no widget rebuild)."""
-        n = self._n_grid
-        for r in range(n):
-            for c in range(n):
-                if r == c:
-                    continue
-                xi = self._fluoro_indices[c]
-                yi = self._fluoro_indices[r]
-                item = self._comp_items[r][c]
-                if item is not None:
-                    if self._comp_sub is not None:
-                        item.setData(
-                            x=self._comp_sub[:, xi],
-                            y=self._comp_sub[:, yi],
-                        )
-                    else:
-                        item.setData(x=np.array([]), y=np.array([]))
+        for (ch_x_idx, ch_y_idx), (_, comp_item) in self._scatter_items.items():
+            if comp_item is None:
+                continue
+            xi = self._fluoro_indices[ch_x_idx]
+            yi = self._fluoro_indices[ch_y_idx]
+            if self._comp_sub is not None:
+                comp_item.setData(x=self._comp_sub[:, xi], y=self._comp_sub[:, yi])
+            else:
+                comp_item.setData(x=np.array([]), y=np.array([]))
 
 
 # ── Control detail / setup panel (right pane) ──────────────────────────────────
@@ -875,151 +896,513 @@ class _ControlSetupPanel(QWidget):
 # ── Matrix tab ─────────────────────────────────────────────────────────────────
 
 class _MatrixTab(QWidget):
-    matrix_updated = Signal(list, np.ndarray)  # channels, matrix
+    """Unified matrix + scatter pane.
+
+    Layout
+    ------
+    Top toolbar:
+        [Compute from controls]  [Load from FCS $SPILL]
+        Saved matrices: [combo] [Load] [Delete] [Save current as…] [Export CSV]
+        [Apply to data]   status label
+
+    Body (horizontal splitter):
+        Left  — spillover matrix table + legend
+        Right — pairwise scatter grid (_PairScatterGrid)
+
+    Live updates
+    ------------
+    Editing the matrix immediately refreshes the scatter preview but does NOT
+    change the active compensation applied to the data.  Click "Apply to data"
+    to commit the change; this emits ``matrix_updated`` which the
+    CompensationWindow relays to the main window to trigger recomputation.
+    """
+
+    # Emitted ONLY when "Apply to data" is clicked (not on every keystroke).
+    matrix_updated = Signal(list, np.ndarray)  # channels, matrix (applied)
 
     def __init__(self, workspace: WorkspaceState, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.workspace = workspace
         self._channels: list[str] = []
         self._matrix: np.ndarray | None = None
+        self._applied = False          # True when editor matrix == active workspace matrix
         self._build_ui()
 
+    # ── Build UI ───────────────────────────────────────────────────────────────
+
     def _build_ui(self) -> None:
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(6)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(6, 6, 6, 6)
+        root.setSpacing(6)
 
-        # Top bar
-        top = QHBoxLayout()
-        top.setSpacing(6)
+        # ── Toolbar row 1: compute + load ────────────────────────────────────
+        row1 = QHBoxLayout()
+        row1.setSpacing(5)
 
-        top.addWidget(QLabel("Sample:"))
+        self._compute_btn = QPushButton("Compute from controls")
+        self._compute_btn.setProperty("variant", "primary")
+        self._compute_btn.setToolTip(
+            "Calculate the spillover matrix from the configured single-stain controls\n"
+            "using the median-positive / median-negative method.\n"
+            "Result is saved automatically and applied to the data."
+        )
+        self._compute_btn.clicked.connect(self._on_compute_from_controls)
+        row1.addWidget(self._compute_btn)
+
+        row1.addWidget(_vline())
+
+        load_lbl = QLabel("Load:")
+        load_lbl.setStyleSheet("color: #6b7280;")
+        row1.addWidget(load_lbl)
+
         self._sample_combo = QComboBox()
-        self._sample_combo.setMinimumWidth(220)
-        self._sample_combo.currentIndexChanged.connect(self._on_sample_changed)
-        top.addWidget(self._sample_combo)
+        self._sample_combo.setMinimumWidth(180)
+        self._sample_combo.setToolTip("Sample to read $SPILL from")
+        row1.addWidget(self._sample_combo)
 
-        self._load_fcs_btn = QPushButton("Load from FCS")
-        self._load_fcs_btn.setToolTip("Read $SPILL / $SPILLOVER from the selected FCS file")
+        self._load_fcs_btn = QPushButton("From FCS $SPILL")
+        self._load_fcs_btn.setToolTip("Read the $SPILL / $SPILLOVER keyword from the selected FCS")
         self._load_fcs_btn.clicked.connect(self._on_load_from_fcs)
-        top.addWidget(self._load_fcs_btn)
+        row1.addWidget(self._load_fcs_btn)
 
-        self._load_ws_btn = QPushButton("Load from workspace")
-        self._load_ws_btn.setToolTip("Reload the matrix saved in the workspace")
-        self._load_ws_btn.clicked.connect(self._on_load_from_workspace)
-        top.addWidget(self._load_ws_btn)
+        row1.addStretch(1)
+        root.addLayout(row1)
 
-        top.addStretch(1)
-        self._status_lbl = QLabel()
+        # ── Toolbar row 2: saved matrix manager + apply ──────────────────────
+        row2 = QHBoxLayout()
+        row2.setSpacing(5)
+
+        saved_lbl = QLabel("Saved:")
+        saved_lbl.setStyleSheet("color: #6b7280;")
+        row2.addWidget(saved_lbl)
+
+        self._saved_combo = QComboBox()
+        self._saved_combo.setMinimumWidth(220)
+        self._saved_combo.setToolTip("Named matrix snapshots — load to compare / roll back")
+        row2.addWidget(self._saved_combo)
+
+        self._load_saved_btn = QPushButton("Load")
+        self._load_saved_btn.setToolTip("Load selected matrix into the editor (preview only)")
+        self._load_saved_btn.clicked.connect(self._on_load_saved)
+        row2.addWidget(self._load_saved_btn)
+
+        self._delete_saved_btn = QPushButton("Delete")
+        self._delete_saved_btn.setProperty("variant", "danger")
+        self._delete_saved_btn.setToolTip("Remove selected matrix from the saved list")
+        self._delete_saved_btn.clicked.connect(self._on_delete_saved)
+        row2.addWidget(self._delete_saved_btn)
+
+        self._save_as_btn = QPushButton("Save current as…")
+        self._save_as_btn.setToolTip("Save the matrix currently in the editor with a name")
+        self._save_as_btn.clicked.connect(self._on_save_as)
+        row2.addWidget(self._save_as_btn)
+
+        self._export_btn = QPushButton("Export CSV")
+        self._export_btn.setToolTip("Export the current editor matrix to a CSV file")
+        self._export_btn.clicked.connect(self._on_export_csv)
+        row2.addWidget(self._export_btn)
+
+        row2.addWidget(_vline())
+
+        self._apply_btn = QPushButton("Apply to data")
+        self._apply_btn.setProperty("variant", "primary")
+        self._apply_btn.setToolTip(
+            "Apply the current matrix to all samples — updates gating, statistics and plots"
+        )
+        self._apply_btn.clicked.connect(self._on_apply)
+        row2.addWidget(self._apply_btn)
+
+        self._clear_btn = QPushButton("Clear")
+        self._clear_btn.setProperty("variant", "danger")
+        self._clear_btn.setToolTip("Remove the active compensation matrix from the workspace")
+        self._clear_btn.clicked.connect(self._on_clear)
+        row2.addWidget(self._clear_btn)
+
+        row2.addStretch(1)
+        self._status_lbl = QLabel("No matrix loaded.")
         self._status_lbl.setStyleSheet("color: #6b7280; font-size: 11px;")
-        top.addWidget(self._status_lbl)
+        row2.addWidget(self._status_lbl)
 
-        layout.addLayout(top)
+        root.addLayout(row2)
 
-        # Table
+        # ── Body: matrix table (left) + scatter grid (right) ─────────────────
+        body = QSplitter(Qt.Horizontal)
+        body.setChildrenCollapsible(False)
+
+        # Left: matrix table
+        left = QWidget()
+        left_layout = QVBoxLayout(left)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(4)
+
         self._table = _MatrixTable()
         self._table.matrix_changed.connect(self._on_matrix_edited)
-        layout.addWidget(self._table, stretch=1)
+        left_layout.addWidget(self._table, stretch=1)
 
-        # Legend
         note = QLabel(
             "Rows = detector · Columns = fluorochrome.  "
-            "Diagonal (green) = 100 %, read-only.  Off-diagonal = spillover %."
+            "Diagonal = read-only (—).  Off-diagonal = spillover fraction (0–1)."
         )
         note.setStyleSheet("color: #6b7280; font-size: 11px;")
         note.setWordWrap(True)
-        layout.addWidget(note)
+        left_layout.addWidget(note)
+        body.addWidget(left)
 
-        # Apply button
-        apply_btn = QPushButton("Apply to workspace")
-        apply_btn.setProperty("variant", "primary")
-        apply_btn.setToolTip("Save this matrix so it is used for statistics and exports")
-        apply_btn.clicked.connect(self._on_apply)
-        clear_btn = QPushButton("Clear workspace matrix")
-        clear_btn.setProperty("variant", "danger")
-        clear_btn.clicked.connect(self._on_clear)
+        # Right: pairwise scatter grid (preview updates live)
+        self._scatter = _PairScatterGrid()
+        self._scatter.set_workspace(self.workspace)
+        body.addWidget(self._scatter)
 
-        btn_row = QHBoxLayout()
-        btn_row.setSpacing(6)
-        btn_row.addWidget(apply_btn)
-        btn_row.addWidget(clear_btn)
-        btn_row.addStretch(1)
-        layout.addLayout(btn_row)
+        body.setSizes([380, 700])
+        root.addWidget(body, stretch=1)
+
+        self._refresh_saved_combo()
+
+    # ── Saved-matrix combo ─────────────────────────────────────────────────────
+
+    def _refresh_saved_combo(self) -> None:
+        prev = self._saved_combo.currentText()
+        self._saved_combo.blockSignals(True)
+        self._saved_combo.clear()
+        for m in self.workspace.saved_spillover_matrices:
+            label = m.name + (f"  [{m.created_at}]" if m.created_at else "")
+            self._saved_combo.addItem(label, m.name)
+        # Restore previous selection if still present
+        for j in range(self._saved_combo.count()):
+            if self._saved_combo.itemText(j).startswith(prev.split("  [")[0]):
+                self._saved_combo.setCurrentIndex(j)
+                break
+        self._saved_combo.blockSignals(False)
+        has = self._saved_combo.count() > 0
+        self._load_saved_btn.setEnabled(has)
+        self._delete_saved_btn.setEnabled(has)
+
+    # ── Public API ─────────────────────────────────────────────────────────────
 
     def refresh(self) -> None:
+        """Called when workspace changes (samples added/removed, workspace loaded)."""
         cur = self._sample_combo.currentData()
         self._sample_combo.blockSignals(True)
         self._sample_combo.clear()
-        if self.workspace:
-            for i, ws in enumerate(self.workspace.samples):
-                self._sample_combo.addItem(ws.sample_name, i)
-        # Restore selection
+        for i, ws in enumerate(self.workspace.samples):
+            self._sample_combo.addItem(ws.sample_name, i)
         if cur is not None:
             for j in range(self._sample_combo.count()):
                 if self._sample_combo.itemData(j) == cur:
                     self._sample_combo.setCurrentIndex(j)
                     break
         self._sample_combo.blockSignals(False)
+
+        self._refresh_saved_combo()
+        self._scatter.set_workspace(self.workspace)
+
+        # Auto-load active workspace matrix on first open
         if self._matrix is None and self.workspace.has_spillover:
             self._load_from_workspace_data()
 
-    def _on_sample_changed(self) -> None:
-        pass  # user must click Load from FCS explicitly
+    # ── Load actions ───────────────────────────────────────────────────────────
 
     def _on_load_from_fcs(self) -> None:
         idx = self._sample_combo.currentData()
         if idx is None or idx >= len(self.workspace.samples):
-            self._status_lbl.setText("No sample selected.")
+            self._set_status("No sample selected.", error=True)
             return
         sample = self.workspace.samples[idx].sample
         result = extract_spillover(sample.metadata)
         if result is None:
-            self._status_lbl.setText(f"No $SPILL found in {sample.file_name}.")
+            self._set_status(f"No $SPILL keyword in {sample.file_name}.", error=True)
             return
         channels, matrix = result
-        self._set_matrix(channels, matrix, source=f"FCS ({sample.file_name})")
-
-    def _on_load_from_workspace(self) -> None:
-        if not self.workspace.has_spillover:
-            self._status_lbl.setText("No matrix saved in workspace yet.")
-            return
-        self._load_from_workspace_data()
+        self._preview_matrix(channels, matrix, label=f"from FCS ({sample.file_name})")
 
     def _load_from_workspace_data(self) -> None:
         n = len(self.workspace.spillover_channels)
         matrix = flat_to_matrix(self.workspace.spillover_values, n)
-        self._set_matrix(self.workspace.spillover_channels, matrix, source="workspace")
+        self._preview_matrix(self.workspace.spillover_channels, matrix, label="from workspace")
+        self._applied = True
+        self._refresh_status()
 
-    def _set_matrix(self, channels: list[str], matrix: np.ndarray, source: str = "") -> None:
+    def _on_load_saved(self) -> None:
+        name = self._saved_combo.currentData()
+        if name is None:
+            return
+        for m in self.workspace.saved_spillover_matrices:
+            if m.name == name:
+                matrix = flat_to_matrix(m.values, len(m.channels))
+                self._preview_matrix(m.channels, matrix, label=f"loaded '{name}' (preview)")
+                return
+
+    def _on_delete_saved(self) -> None:
+        name = self._saved_combo.currentData()
+        if name is None:
+            return
+        self.workspace.delete_spillover_matrix(name)
+        self._refresh_saved_combo()
+
+    # ── Save / export ──────────────────────────────────────────────────────────
+
+    def _on_save_as(self) -> None:
+        from PySide6.QtWidgets import QInputDialog
+        if self._matrix is None:
+            self._set_status("No matrix to save.", error=True)
+            return
+        name, ok = QInputDialog.getText(self, "Save matrix", "Name for this matrix:")
+        if not ok or not name.strip():
+            return
+        name = name.strip()
+        from datetime import datetime as _dt
+        ts = _dt.now().strftime("%Y-%m-%d %H:%M")
+        self.workspace.save_spillover_matrix(name, self._channels, matrix_to_flat(self._matrix), ts)
+        self._refresh_saved_combo()
+        # Select the just-saved entry
+        for j in range(self._saved_combo.count()):
+            if self._saved_combo.itemData(j) == name:
+                self._saved_combo.setCurrentIndex(j)
+                break
+        self._set_status(f"Saved as '{name}'.")
+
+    def _on_export_csv(self) -> None:
+        from PySide6.QtWidgets import QFileDialog
+        if self._matrix is None:
+            self._set_status("No matrix to export.", error=True)
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export spillover matrix", "spillover_matrix.csv", "CSV files (*.csv)"
+        )
+        if not path:
+            return
+        import csv
+        with open(path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow([""] + self._channels)
+            n = len(self._channels)
+            for r in range(n):
+                row = [self._channels[r]]
+                for c in range(n):
+                    row.append("—" if r == c else f"{self._matrix[r, c]:.6f}")
+                writer.writerow(row)
+        self._set_status(f"Exported to {path}")
+
+    # ── Apply / clear ──────────────────────────────────────────────────────────
+
+    def _on_apply(self) -> None:
+        result = self._table.current_matrix()
+        if result is None:
+            self._set_status("No matrix to apply.", error=True)
+            return
+        channels, matrix = result
         self._channels = channels
         self._matrix = matrix.copy()
-        self._table.load(channels, matrix)
-        self._status_lbl.setText(
-            f"{len(channels)}×{len(channels)} matrix" + (f" — from {source}" if source else "")
-        )
+        self.workspace.set_spillover(channels, matrix_to_flat(matrix))
+        self._applied = True
+        self._refresh_status()
         self.matrix_updated.emit(channels, matrix)
 
+    def _on_clear(self) -> None:
+        self.workspace.clear_spillover()
+        self._applied = False
+        self._scatter.clear_spillover()
+        self._set_status("Compensation cleared from workspace.")
+        self.matrix_updated.emit([], np.zeros((0, 0)))
+
+    # ── Matrix editor callbacks ────────────────────────────────────────────────
+
+    def _preview_matrix(self, channels: list[str], matrix: np.ndarray, label: str = "") -> None:
+        """Load matrix into editor and refresh scatter preview (no data recompute)."""
+        self._channels = list(channels)
+        self._matrix = matrix.copy()
+        self._table.load(channels, matrix)
+        self._applied = False
+        self._set_status(f"Preview: {label}" if label else "Preview")
+        self._scatter.update_spillover(channels, matrix)
+
     def _on_matrix_edited(self) -> None:
+        """Live preview: refresh scatter without recomputing data."""
         result = self._table.current_matrix()
         if result is None:
             return
         channels, matrix = result
         self._channels = channels
         self._matrix = matrix
+        self._applied = False
+        self._refresh_status()
+        self._scatter.update_spillover(channels, matrix)
+
+    # ── Compute from controls ──────────────────────────────────────────────────
+
+    def _on_compute_from_controls(self) -> None:
+        """Compute the spillover matrix from configured single-stain controls.
+
+        Algorithm (per column c, single-stain control for fluorochrome c):
+            spillover[r, c] = (median(pos[:, r]) - median(neg[:, r]))
+                             / (median(pos[:, c]) - median(neg[:, c]))
+
+        The result is auto-saved with a timestamp and immediately applied.
+        """
+        comp_samples = self.workspace.compensation_samples()
+        configured = [
+            (ws_idx, ws)
+            for ws_idx, ws in comp_samples
+            if ws.compensation.control_type == "single_stain"
+            and ws.compensation.target_channel
+            and ws.compensation_positive.is_configured
+        ]
+
+        if len(configured) < 2:
+            QMessageBox.warning(
+                self, "Not enough controls",
+                "Need at least 2 fully configured single-stain controls.\n\n"
+                "For each control, in the Control setup tab, set:\n"
+                "  • Control type = Single stain\n"
+                "  • Target channel (e.g. GFP-A)\n"
+                "  • Positive population gate\n"
+                "Then click Save changes.",
+            )
+            return
+
+        # Build ordered channel list (first-occurrence order)
+        channels: list[str] = []
+        ch_set: set[str] = set()
+        for _, ws in configured:
+            ch = ws.compensation.target_channel
+            if ch not in ch_set:
+                channels.append(ch)
+                ch_set.add(ch)
+
+        n = len(channels)
+        ch_to_col = {ch: i for i, ch in enumerate(channels)}
+        matrix = np.eye(n, dtype=float)
+        errors: list[str] = []
+
+        for _ws_idx, ws in configured:
+            col = ch_to_col[ws.compensation.target_channel]
+            sample = ws.sample
+
+            ch_indices: list[int | None] = [_find_channel_idx(sample, ch) for ch in channels]
+            if None in ch_indices:
+                missing = [ch for ch, idx in zip(channels, ch_indices) if idx is None]
+                errors.append(f"• {ws.sample_name}: channels not found: {missing}")
+                continue
+
+            # Positive mask
+            pos_mask: np.ndarray | None = None
+            for gate in ws.gates:
+                if gate.name == ws.compensation_positive.population_name:
+                    pos_mask = gate.full_mask
+                    break
+            if pos_mask is None:
+                pos_mask = np.ones(sample.event_count, dtype=bool)
+
+            # Negative mask
+            neg_sample = sample
+            neg_ch_indices: list[int | None] = list(ch_indices)
+            neg_mask: np.ndarray | None = None
+
+            if ws.use_universal_negative and ws.compensation_negative.sample_index is not None:
+                neg_si = ws.compensation_negative.sample_index
+                if neg_si < len(self.workspace.samples):
+                    neg_ws = self.workspace.samples[neg_si]
+                    neg_sample = neg_ws.sample
+                    neg_ch_indices = [_find_channel_idx(neg_sample, ch) for ch in channels]
+                    for gate in neg_ws.gates:
+                        if gate.name == ws.compensation_negative.population_name:
+                            neg_mask = gate.full_mask
+                            break
+                    if neg_mask is None:
+                        neg_mask = np.ones(neg_sample.event_count, dtype=bool)
+            else:
+                for gate in ws.gates:
+                    if gate.name == ws.compensation_negative.population_name:
+                        neg_mask = gate.full_mask
+                        break
+                if neg_mask is None:
+                    neg_mask = ~pos_mask  # fallback: non-positive events
+
+            pos_events = sample.effective_events[pos_mask]
+            neg_events = neg_sample.effective_events[neg_mask]
+
+            if pos_events.shape[0] == 0:
+                errors.append(f"• {ws.sample_name}: positive population is empty.")
+                continue
+
+            src_idx = ch_indices[col]
+            neg_src_idx = neg_ch_indices[col] if neg_ch_indices[col] is not None else src_idx
+            pos_src = float(np.median(pos_events[:, src_idx]))
+            neg_src = (
+                float(np.median(neg_events[:, neg_src_idx]))
+                if neg_events.shape[0] > 0 and neg_src_idx is not None else 0.0
+            )
+            denom = pos_src - neg_src
+
+            if denom <= 0:
+                errors.append(
+                    f"• {ws.sample_name} ({channels[col]}): "
+                    "positive ≤ negative — skipping this column."
+                )
+                continue
+
+            for row in range(n):
+                if row == col:
+                    continue
+                r_idx = ch_indices[row]
+                neg_r_idx = neg_ch_indices[row] if neg_ch_indices[row] is not None else r_idx
+                pos_r = float(np.median(pos_events[:, r_idx]))
+                neg_r = (
+                    float(np.median(neg_events[:, neg_r_idx]))
+                    if neg_events.shape[0] > 0 and neg_r_idx is not None else 0.0
+                )
+                matrix[row, col] = (pos_r - neg_r) / denom
+
+        if errors:
+            QMessageBox.warning(
+                self, "Computation warnings",
+                "Matrix computed with issues:\n\n" + "\n".join(errors),
+            )
+
+        if n == 0:
+            return
+
+        # Auto-save the computed matrix with a timestamp
+        from datetime import datetime as _dt
+        ts = _dt.now().strftime("%Y-%m-%d %H:%M")
+        save_name = f"Auto {ts}"
+        self.workspace.save_spillover_matrix(save_name, channels, matrix_to_flat(matrix), ts)
+        self._refresh_saved_combo()
+        for j in range(self._saved_combo.count()):
+            if self._saved_combo.itemData(j) == save_name:
+                self._saved_combo.setCurrentIndex(j)
+                break
+
+        # Load into editor, apply to data
+        self._table.load(channels, matrix)
+        self._channels = list(channels)
+        self._matrix = matrix.copy()
+        self.workspace.set_spillover(channels, matrix_to_flat(matrix))
+        self._applied = True
+        self._refresh_status()
+        self._scatter.update_spillover(channels, matrix)
         self.matrix_updated.emit(channels, matrix)
 
-    def _on_apply(self) -> None:
-        result = self._table.current_matrix()
-        if result is None:
-            QMessageBox.warning(self, "No matrix", "Load or define a spillover matrix first.")
-            return
-        channels, matrix = result
-        self.workspace.set_spillover(channels, matrix_to_flat(matrix))
-        self._status_lbl.setText(f"Matrix saved to workspace ({len(channels)}×{len(channels)}).")
+    # ── Status helpers ─────────────────────────────────────────────────────────
 
-    def _on_clear(self) -> None:
-        self.workspace.clear_spillover()
-        self._status_lbl.setText("Workspace matrix cleared.")
+    def _set_status(self, msg: str, *, error: bool = False) -> None:
+        color = "#dc2626" if error else "#6b7280"
+        self._status_lbl.setStyleSheet(f"color: {color}; font-size: 11px;")
+        self._status_lbl.setText(msg)
+
+    def _refresh_status(self) -> None:
+        if self._matrix is None:
+            self._set_status("No matrix loaded.")
+            return
+        n = len(self._channels)
+        if self._applied:
+            self._set_status(f"Applied ✓  ({n}×{n})")
+            self._status_lbl.setStyleSheet("color: #166534; font-size: 11px; font-weight: bold;")
+        else:
+            self._set_status(
+                f"Preview — click 'Apply to data' to use for gating and statistics  ({n}×{n})"
+            )
+            self._status_lbl.setStyleSheet("color: #b45309; font-size: 11px;")
 
     def current_spillover(self) -> tuple[list[str], np.ndarray] | None:
         if self._matrix is None or not self._channels:
@@ -1161,15 +1544,10 @@ class CompensationWindow(QDialog):
         self._setup_panel.changed.connect(self._on_setup_saved)
         self._tabs.addTab(self._setup_panel, "Control setup")
 
-        # Tab 2: Matrix
+        # Tab 2: Matrix + pairwise scatter (unified view)
         self._matrix_tab = _MatrixTab(self.workspace)
         self._matrix_tab.matrix_updated.connect(self._on_matrix_updated)
-        self._tabs.addTab(self._matrix_tab, "Spillover matrix")
-
-        # Tab 3: Pairwise scatter grid
-        self._scatter = _PairScatterGrid()
-        self._scatter.set_workspace(self.workspace)
-        self._tabs.addTab(self._scatter, "Pairwise scatter")
+        self._tabs.addTab(self._matrix_tab, "Spillover matrix & scatter")
 
         splitter.addWidget(self._tabs)
         splitter.setStretchFactor(0, 2)
@@ -1292,7 +1670,9 @@ class CompensationWindow(QDialog):
         self._emit_changed()
 
     def _on_matrix_updated(self, channels: list[str], matrix: np.ndarray) -> None:
-        self._scatter.update_spillover(channels, matrix)
+        # matrix_updated is only emitted when "Apply to data" is clicked,
+        # so always propagate to the main window to recompute compensation.
+        self._emit_changed()
 
     def _emit_changed(self) -> None:
         if self._on_workspace_changed:
@@ -1303,4 +1683,3 @@ class CompensationWindow(QDialog):
 
     def refresh(self) -> None:
         self._refresh_controls_table()
-        self._scatter.set_workspace(self.workspace)
