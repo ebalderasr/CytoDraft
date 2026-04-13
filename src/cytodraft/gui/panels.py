@@ -32,6 +32,29 @@ from PySide6.QtWidgets import (
 from cytodraft.core.statistics import STATISTIC_DEFINITIONS
 
 ITEM_ROLE_ID = Qt.UserRole
+
+
+class _NoScrollComboBox(QComboBox):
+    """QComboBox that ignores wheel events unless it has keyboard focus.
+
+    Prevents accidental axis/scale changes while scrolling the inspector panel.
+    """
+
+    def wheelEvent(self, event) -> None:
+        if self.hasFocus():
+            super().wheelEvent(event)
+        else:
+            event.ignore()
+
+
+class _NoScrollSpinBox(QSpinBox):
+    """QSpinBox that ignores wheel events unless it has keyboard focus."""
+
+    def wheelEvent(self, event) -> None:
+        if self.hasFocus():
+            super().wheelEvent(event)
+        else:
+            event.ignore()
 ITEM_ROLE_TYPE = Qt.UserRole + 1
 ITEM_ROLE_GROUP = Qt.UserRole + 2
 
@@ -358,26 +381,6 @@ class SamplePanel(QWidget):
         if len(types) == 1:
             return next(iter(types))
         return "mixed"
-
-    # ── Backward-compatibility stubs ────────────────────────────────────
-
-    def reset_gates(self) -> None:
-        pass
-
-    def add_gate(self, label: str, *, select: bool = True) -> None:
-        pass
-
-    def update_gate(self, gate_index: int, label: str, color_hex: str) -> None:
-        pass
-
-    def gate_item(self, gate_index: int) -> None:
-        return None
-
-    def set_population_context(self, origin_name: str, child_names: list[str]) -> None:
-        pass
-
-    def set_sample_details(self, details: str) -> None:
-        pass
 
     # ── Private helpers ──────────────────────────────────────────────────
 
@@ -766,31 +769,33 @@ class InspectorPanel(QWidget):
         info_layout.addWidget(self.active_gate_label)
         info_box.setLayout(info_layout)
 
-        self.plot_mode_combo = QComboBox()
+        self.plot_mode_combo = _NoScrollComboBox()
         self.plot_mode_combo.addItem("Scatter (2D)", "scatter")
         self.plot_mode_combo.addItem("Histogram (1D)", "histogram")
 
-        self.x_axis_combo = QComboBox()
-        self.y_axis_combo = QComboBox()
+        self.x_axis_combo = _NoScrollComboBox()
+        self.y_axis_combo = _NoScrollComboBox()
         self.x_axis_combo.setEnabled(False)
         self.y_axis_combo.setEnabled(False)
 
-        self.x_scale_combo = QComboBox()
+        self.x_scale_combo = _NoScrollComboBox()
         self.x_scale_combo.addItem("Linear", "linear")
         self.x_scale_combo.addItem("Log10", "log10")
         self.x_scale_combo.addItem("Asinh", "asinh")
 
-        self.y_scale_combo = QComboBox()
+        self.y_scale_combo = _NoScrollComboBox()
         self.y_scale_combo.addItem("Linear", "linear")
         self.y_scale_combo.addItem("Log10", "log10")
         self.y_scale_combo.addItem("Asinh", "asinh")
 
         self.limit_points_checkbox = QCheckBox("Limit displayed points")
         self.limit_points_checkbox.setChecked(True)
-        self.show_subpopulations_checkbox = QCheckBox("Show direct subpopulations")
+        self.show_gate_overlays_checkbox = QCheckBox("Show gate outlines")
+        self.show_gate_overlays_checkbox.setChecked(True)
+        self.show_subpopulations_checkbox = QCheckBox("Color subpopulations")
         self.show_subpopulations_checkbox.setChecked(False)
 
-        self.max_points_spin = QSpinBox()
+        self.max_points_spin = _NoScrollSpinBox()
         self.max_points_spin.setRange(1000, 200000)
         self.max_points_spin.setSingleStep(1000)
         self.max_points_spin.setValue(30000)
@@ -806,69 +811,84 @@ class InspectorPanel(QWidget):
             edit.setValidator(validator)
             edit.setPlaceholderText("auto")
 
-        self.apply_view_button = QPushButton("Apply view")
+        self.apply_view_button = QPushButton("Apply range")
         self.apply_view_button.setProperty("variant", "subtle")
-        self.auto_range_button = QPushButton("Reset zoom")
-        self.auto_range_button.setProperty("variant", "subtle")
+        self.apply_view_button.setToolTip(
+            "Apply the typed X/Y range values to the plot\n"
+            "(also applies automatically when you press Enter in any field)"
+        )
+        self.auto_range_button = QPushButton("Auto range")
+        self.auto_range_button.setProperty("variant", "primary")
+        self.auto_range_button.setToolTip("Reset view to fit all visible data")
 
-        for button in (
-            self.apply_view_button,
-            self.auto_range_button,
-        ):
+        for button in (self.apply_view_button, self.auto_range_button):
             button.setMinimumHeight(34)
             button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
+        # ── Visualization box ─────────────────────────────────────────
         visualization_box = QGroupBox("Visualization")
-        visualization_form = QFormLayout()
-        visualization_form.setHorizontalSpacing(10)
-        visualization_form.setVerticalSpacing(8)
-        visualization_form.addRow("Plot mode:", self.plot_mode_combo)
-        visualization_form.addRow("X axis:", self.x_axis_combo)
-        visualization_form.addRow("Y axis:", self.y_axis_combo)
-        visualization_form.addRow("", self.show_subpopulations_checkbox)
-        visualization_box.setLayout(visualization_form)
+        self._visualization_form = QFormLayout()
+        self._visualization_form.setHorizontalSpacing(10)
+        self._visualization_form.setVerticalSpacing(8)
+        self._visualization_form.addRow("Plot mode:", self.plot_mode_combo)     # row 0
+        self._visualization_form.addRow("X axis:", self.x_axis_combo)           # row 1
+        self._visualization_form.addRow("Y axis:", self.y_axis_combo)           # row 2
+        self._visualization_form.addRow("", self.show_gate_overlays_checkbox)    # row 3
+        self._visualization_form.addRow("", self.show_subpopulations_checkbox)  # row 4
+        visualization_box.setLayout(self._visualization_form)
 
-        plot_adjustments_box = QGroupBox("Scales & Range")
-        plot_adjustments_form = QFormLayout()
-        plot_adjustments_form.setHorizontalSpacing(10)
-        plot_adjustments_form.setVerticalSpacing(8)
-        plot_adjustments_form.addRow("X scale:", self.x_scale_combo)
-        plot_adjustments_form.addRow("Y scale:", self.y_scale_combo)
-        plot_adjustments_box.setLayout(plot_adjustments_form)
+        # ── Axes & Range box ──────────────────────────────────────────
+        # Combines scale selectors, range inputs, and action buttons.
+        # Y-related rows are hidden automatically in histogram mode.
+        axes_box = QGroupBox("Axes & Range")
 
-        range_box = QGroupBox("Visible Range")
-        range_layout = QFormLayout()
-        range_layout.setContentsMargins(0, 0, 0, 0)
-        range_layout.setHorizontalSpacing(10)
-        range_layout.setVerticalSpacing(8)
-        range_layout.addRow("X min:", self.x_min_edit)
-        range_layout.addRow("X max:", self.x_max_edit)
-        range_layout.addRow("Y min:", self.y_min_edit)
-        range_layout.addRow("Y max:", self.y_max_edit)
-        range_box.setLayout(range_layout)
+        self._axes_form = QFormLayout()
+        self._axes_form.setHorizontalSpacing(10)
+        self._axes_form.setVerticalSpacing(8)
+        self._axes_form.addRow("X scale:", self.x_scale_combo)   # row 0
+        self._axes_form.addRow("X min:", self.x_min_edit)         # row 1
+        self._axes_form.addRow("X max:", self.x_max_edit)         # row 2
+        self._axes_form.addRow("Y scale:", self.y_scale_combo)    # row 3
+        self._axes_form.addRow("Y min:", self.y_min_edit)         # row 4
+        self._axes_form.addRow("Y max:", self.y_max_edit)         # row 5
 
-        quick_actions_box = QGroupBox("Quick Actions")
-        quick_actions_layout = QVBoxLayout()
-        quick_actions_layout.setSpacing(8)
-        quick_actions_layout.addWidget(self.apply_view_button)
-        quick_actions_layout.addWidget(self.auto_range_button)
-        quick_actions_layout.addWidget(self.limit_points_checkbox)
+        axes_hint = QLabel("Press Enter in any field to apply immediately.")
+        axes_hint.setWordWrap(True)
+        axes_hint.setStyleSheet("color: #9ca3af; font-size: 11px;")
+
+        actions_row = QHBoxLayout()
+        actions_row.setSpacing(6)
+        actions_row.setContentsMargins(0, 0, 0, 0)
+        actions_row.addWidget(self.auto_range_button)
+        actions_row.addWidget(self.apply_view_button)
+
+        axes_inner = QVBoxLayout()
+        axes_inner.setSpacing(8)
+        axes_inner.setContentsMargins(0, 0, 0, 0)
+        axes_inner.addLayout(self._axes_form)
+        axes_inner.addWidget(axes_hint)
+        axes_inner.addLayout(actions_row)
+        axes_box.setLayout(axes_inner)
+
+        # ── Display box ───────────────────────────────────────────────
+        display_box = QGroupBox("Display")
+        display_layout = QVBoxLayout()
+        display_layout.setSpacing(8)
+        display_layout.addWidget(self.limit_points_checkbox)
         sampling_row = QFormLayout()
         sampling_row.setContentsMargins(0, 0, 0, 0)
         sampling_row.setHorizontalSpacing(10)
         sampling_row.addRow("Max points:", self.max_points_spin)
-        quick_actions_layout.addLayout(sampling_row)
-        quick_actions_layout.addStretch(1)
-        quick_actions_box.setLayout(quick_actions_layout)
+        display_layout.addLayout(sampling_row)
+        display_box.setLayout(display_layout)
 
         view_controls_box = QWidget()
         view_layout = QVBoxLayout()
         view_layout.setContentsMargins(0, 0, 0, 0)
         view_layout.setSpacing(10)
         view_layout.addWidget(visualization_box)
-        view_layout.addWidget(plot_adjustments_box)
-        view_layout.addWidget(range_box)
-        view_layout.addWidget(quick_actions_box)
+        view_layout.addWidget(axes_box)
+        view_layout.addWidget(display_box)
         view_layout.addStretch(1)
         view_controls_box.setLayout(view_layout)
 
@@ -971,6 +991,7 @@ class InspectorPanel(QWidget):
         self.y_scale_combo.currentIndexChanged.connect(self._emit_view_settings_changed)
         self.limit_points_checkbox.toggled.connect(self._emit_sampling_changed)
         self.max_points_spin.valueChanged.connect(self._emit_sampling_changed)
+        self.show_gate_overlays_checkbox.toggled.connect(self._emit_view_settings_changed)
         self.show_subpopulations_checkbox.toggled.connect(self._emit_view_settings_changed)
 
         self.x_min_edit.editingFinished.connect(self._emit_view_settings_changed)
@@ -1126,12 +1147,14 @@ class InspectorPanel(QWidget):
             with QSignalBlocker(self.plot_mode_combo):
                 self.plot_mode_combo.setCurrentIndex(combo_index)
         self._plot_mode = mode
-        if mode == "histogram":
-            self.y_axis_combo.setEnabled(False)
-            self.y_scale_combo.setEnabled(False)
-        else:
-            self.y_axis_combo.setEnabled(self.y_axis_combo.count() >= 2)
-            self.y_scale_combo.setEnabled(True)
+        is_histogram = mode == "histogram"
+        # Hide Y-axis controls in histogram mode — they are not applicable.
+        self._visualization_form.setRowVisible(2, not is_histogram)  # Y axis combo
+        self._axes_form.setRowVisible(3, not is_histogram)            # Y scale
+        self._axes_form.setRowVisible(4, not is_histogram)            # Y min
+        self._axes_form.setRowVisible(5, not is_histogram)            # Y max
+        self.y_axis_combo.setEnabled(not is_histogram and self.y_axis_combo.count() >= 2)
+        self.y_scale_combo.setEnabled(not is_histogram)
     def current_scales(self) -> tuple[str, str]:
         x_mode = str(self.x_scale_combo.currentData())
         y_mode = str(self.y_scale_combo.currentData())
@@ -1153,6 +1176,9 @@ class InspectorPanel(QWidget):
 
     def sampling_settings(self) -> tuple[bool, int]:
         return self.limit_points_checkbox.isChecked(), self.max_points_spin.value()
+
+    def show_gate_overlays_enabled(self) -> bool:
+        return self.show_gate_overlays_checkbox.isChecked()
 
     def show_subpopulations_enabled(self) -> bool:
         return self.show_subpopulations_checkbox.isChecked()
@@ -1203,4 +1229,7 @@ class InspectorPanel(QWidget):
         stripped = text.strip()
         if not stripped:
             return None
-        return float(stripped)
+        try:
+            return float(stripped)
+        except ValueError:
+            return None

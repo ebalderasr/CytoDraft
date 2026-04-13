@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -30,6 +30,10 @@ class SampleData:
     scatter_indices: list[int]
     fluoro_indices: list[int]
     time_index: int | None = None
+    # Compensated events — set by MainWindow._recompute_all_compensation() when a
+    # spillover matrix is active.  Always None when no compensation is applied.
+    # Raw events are never modified; effective_events picks the right array.
+    compensated_events: np.ndarray | None = field(default=None)
 
     @property
     def file_name(self) -> str:
@@ -41,3 +45,8 @@ class SampleData:
 
     def channel_label(self, index: int) -> str:
         return self.channels[index].display_name
+
+    @property
+    def effective_events(self) -> np.ndarray:
+        """Return compensated events if available, otherwise raw events."""
+        return self.compensated_events if self.compensated_events is not None else self.events

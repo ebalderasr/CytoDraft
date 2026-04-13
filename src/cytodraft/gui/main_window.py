@@ -35,11 +35,13 @@ from cytodraft.core.statistics import (
     StatisticResult,
     calculate_population_statistics,
 )
+from cytodraft.core.compensation import apply_compensation_to_sample, extract_spillover, flat_to_matrix
 from cytodraft.core.transforms import apply_scale, axis_label
 from cytodraft.gui.batch_export_dialog import BatchExportDialog
 from cytodraft.gui.compensation_dialog import CompensationWindow
 from cytodraft.gui.gate_toolbar import GateToolbar
 from cytodraft.gui.panels import InspectorPanel, SamplePanel
+from cytodraft.gui.results_window import ResultsWindow
 from cytodraft.gui.sample_table_window import SampleTableWindow
 from cytodraft.gui.plot_widget import (
     CytometryPlotWidget,
@@ -97,6 +99,7 @@ class MainWindow(QMainWindow):
         self.inspector_panel = InspectorPanel()
         self._sample_table_window: SampleTableWindow | None = None
         self._compensation_window: CompensationWindow | None = None
+        self._results_window: ResultsWindow | None = None
 
         self._build_ui()
         self._connect_signals()
@@ -178,6 +181,11 @@ class MainWindow(QMainWindow):
         )
         view_menu.addAction(self.compensation_editor_action)
 
+        self.results_action = QAction("Results...", self)
+        self.results_action.setShortcut("Ctrl+R")
+        self.results_action.setToolTip("View and export statistics results across samples")
+        view_menu.addAction(self.results_action)
+
         help_menu = menu_bar.addMenu("&Help")
         self.about_action = QAction("About CytoDraft", self)
         help_menu.addAction(self.about_action)
@@ -190,6 +198,7 @@ class MainWindow(QMainWindow):
 
         toolbar.addAction(self.sample_table_action)
         toolbar.addAction(self.compensation_editor_action)
+        toolbar.addAction(self.results_action)
 
     def _move_statistics_to_sample_manager(self) -> None:
         for tab_index in range(self.inspector_panel.controls_tabs.count()):
@@ -207,6 +216,7 @@ class MainWindow(QMainWindow):
         self.about_action.triggered.connect(self.show_about_dialog)
         self.sample_table_action.triggered.connect(self.open_sample_table)
         self.compensation_editor_action.triggered.connect(self.open_compensation_editor)
+        self.results_action.triggered.connect(self.open_results_window)
         self.sample_panel.add_sample_button.clicked.connect(self.open_fcs_dialog)
         self.sample_panel.remove_sample_button.clicked.connect(self.remove_selected_sample)
         self.sample_panel.select_group_samples_requested.connect(self.on_select_group_samples)
@@ -291,15 +301,33 @@ class MainWindow(QMainWindow):
         self._compensation_window.raise_()
         self._compensation_window.activateWindow()
 
+    def open_results_window(self) -> None:
+        """Open (or bring to front) the Results window, preserving selections."""
+        if self._results_window is None:
+            self._results_window = ResultsWindow(
+                self.workspace,
+                self.statistics_service,
+                parent=self,
+            )
+        else:
+            self._results_window.refresh()
+        self._results_window.show()
+        self._results_window.raise_()
+        self._results_window.activateWindow()
+
     def _on_compensation_workspace_changed(self) -> None:
+        self._recompute_all_compensation()
         self._sync_from_workspace()
         self._refresh_sample_list(select_active=True)
-        self._refresh_sample_details()
+        self._refresh_gate_panel()
+        self.redraw_current_plot(show_status=False)
 
     def _refresh_sample_table(self) -> None:
         """Refresh the Sample Table window if it is open."""
         if self._sample_table_window is not None and self._sample_table_window.isVisible():
             self._sample_table_window.refresh()
+        if self._results_window is not None and self._results_window.isVisible():
+            self._results_window.refresh()
 
     def _on_workspace_changed_from_sample_manager(self) -> None:
         self._sync_from_workspace()
@@ -311,7 +339,6 @@ class MainWindow(QMainWindow):
             self.gates = []
             self.active_gate = None
             self.sample_panel.reset_samples()
-            self.sample_panel.reset_gates()
             self._update_population_context_labels()
             self.inspector_panel.set_file_info()
             self.inspector_panel.set_displayed_points(None, None)
@@ -377,6 +404,7 @@ class MainWindow(QMainWindow):
         self.selected_group_name = resolved_group_name if group_name is not None or self.selected_group_name == resolved_group_name else self.selected_group_name
         if group_name is not None:
             self.selected_group_name = resolved_group_name
+        self._recompute_all_compensation()
         self._sync_from_workspace()
         self._clear_statistics_results()
         self._refresh_available_groups()
@@ -478,22 +506,6 @@ class MainWindow(QMainWindow):
             return population_name
         return f"{self.workspace.samples[sample_index].sample.file_name}: {population_name}"
 
-    def _refresh_sample_details(self) -> None:
-        sample_index = self.sample_panel.current_sample_workspace_index()
-        if sample_index is None or sample_index < 0 or sample_index >= len(self.workspace.samples):
-            self.sample_panel.set_sample_details("")
-            return
-
-        workspace_sample = self.workspace.samples[sample_index]
-        if workspace_sample.group_name == COMPENSATION_GROUP_NAME:
-            details = workspace_sample.compensation.summary
-            if workspace_sample.compensation.notes:
-                details = f"{details} | {workspace_sample.compensation.notes}"
-            self.sample_panel.set_sample_details(details)
-            return
-
-        self.sample_panel.set_sample_details(f"Group: {workspace_sample.group_name}")
-
     def _refresh_gate_panel(self) -> None:
         active_ws_index = self.workspace.active_sample_index
         if active_ws_index is None:
@@ -511,6 +523,26 @@ class MainWindow(QMainWindow):
             self.inspector_panel.set_active_gate(self.active_gate.name)
         self._update_population_context_labels()
         self._refresh_statistics_population_options()
+
+    def _recompute_all_compensation(self) -> None:
+        """Apply (or clear) the workspace spillover matrix on every sample.
+
+        Sets sample.compensated_events and recomputes all gate masks so they
+        reflect the current effective_events (compensated or raw).
+        """
+        if not self.workspace.has_spillover:
+            for ws in self.workspace.samples:
+                ws.sample.compensated_events = None
+            return
+
+        n = len(self.workspace.spillover_channels)
+        matrix = flat_to_matrix(self.workspace.spillover_values, n)
+        channels = self.workspace.spillover_channels
+
+        for ws in self.workspace.samples:
+            result = apply_compensation_to_sample(ws.sample, channels, matrix)
+            ws.sample.compensated_events = result  # None when channel mapping fails
+            self.gate_service.recompute_all_gate_masks(ws.sample, ws.gates)
 
     def _show_active_sample(self) -> None:
         if self.current_sample is None:
@@ -533,10 +565,24 @@ class MainWindow(QMainWindow):
     def _configure_axis_selectors(self, sample: SampleData) -> None:
         channel_names = [channel.display_name for channel in sample.channels]
 
-        try:
-            x_idx, y_idx = choose_default_axes(sample)
-        except ValueError:
-            x_idx, y_idx = 0, 0
+        # Preserve the currently selected channel names so that navigating
+        # between samples keeps the same axes (e.g. CD4 vs CD8 stays fixed).
+        current_x = self.inspector_panel.x_axis_combo.currentText()
+        current_y = self.inspector_panel.y_axis_combo.currentText()
+
+        if current_x and current_x in channel_names:
+            x_idx = channel_names.index(current_x)
+            y_idx = (
+                channel_names.index(current_y)
+                if current_y and current_y in channel_names
+                else (1 if len(channel_names) > 1 else 0)
+            )
+        else:
+            # First sample or channels don't match — use the FCS-recommended defaults.
+            try:
+                x_idx, y_idx = choose_default_axes(sample)
+            except ValueError:
+                x_idx, y_idx = 0, 0
 
         self.inspector_panel.set_channels(channel_names, x_index=x_idx, y_index=y_idx)
         self.inspector_panel.set_statistics_channels(channel_names, selected_channel_index=x_idx)
@@ -723,7 +769,6 @@ class MainWindow(QMainWindow):
 
         self._refresh_available_groups()
         self.sample_panel.reset_samples()
-        self.sample_panel.reset_gates()
         self._update_population_context_labels()
         self.inspector_panel.set_file_info()
         self.inspector_panel.set_displayed_points(None, None)
@@ -765,10 +810,8 @@ class MainWindow(QMainWindow):
 
     def on_sample_selection_changed(self, row: int) -> None:
         if row < 0:
-            self._refresh_sample_details()
             return
         if row >= len(self.workspace.samples):
-            self._refresh_sample_details()
             return
 
         self.workspace.active_sample_index = row
@@ -776,7 +819,6 @@ class MainWindow(QMainWindow):
         self._clear_statistics_results()
         self._refresh_gate_panel()
         self._show_active_sample()
-        self._refresh_sample_details()
         if self.current_sample is not None:
             self.statusBar().showMessage(f"Focused on {self.current_sample.file_name}", 4000)
 
@@ -784,7 +826,6 @@ class MainWindow(QMainWindow):
         resolved_group_name = None if group_name is None else str(group_name)
         self.selected_group_name = resolved_group_name
         self._refresh_sample_list(select_active=True)
-        self._refresh_sample_details()
 
     def on_rename_group(self, group_name: str) -> None:
         group = self.workspace.groups.get(group_name)
@@ -911,7 +952,6 @@ class MainWindow(QMainWindow):
         normalized = new_name.strip()
         workspace_sample.display_name_override = normalized or None
         self._refresh_sample_list(select_active=True)
-        self._refresh_sample_details()
         self._refresh_sample_table()
         self.statusBar().showMessage(f"Renamed sample to {workspace_sample.sample_name}", 4000)
 
@@ -973,8 +1013,8 @@ class MainWindow(QMainWindow):
         if population_mask is None:
             return
 
-        raw_x = sample.events[population_mask, x_idx]
-        raw_y = sample.events[population_mask, y_idx]
+        raw_x = sample.effective_events[population_mask, x_idx]
+        raw_y = sample.effective_events[population_mask, y_idx]
 
         x_scale, y_scale = self.inspector_panel.current_scales()
 
@@ -1005,9 +1045,17 @@ class MainWindow(QMainWindow):
             if active_overlay is not None:
                 gate_overlays.append(active_overlay)
 
+        current_name = self.current_population_name()
+        children = self._children_of_population(current_name)
+
+        if self.inspector_panel.show_gate_overlays_enabled():
+            for child_gate in children:
+                child_overlay = self._scatter_gate_overlay_for_gate(child_gate, x_idx=x_idx, y_idx=y_idx)
+                if child_overlay is not None:
+                    gate_overlays.append(child_overlay)
+
         if self.inspector_panel.show_subpopulations_enabled():
-            current_name = self.current_population_name()
-            for child_gate in self._children_of_population(current_name):
+            for child_gate in children:
                 child_local_mask = child_gate.full_mask[population_mask]
                 if len(child_local_mask) != len(finite_mask):
                     continue
@@ -1021,9 +1069,6 @@ class MainWindow(QMainWindow):
                         child_gate.color_hex,
                     )
                 )
-                child_overlay = self._scatter_gate_overlay_for_gate(child_gate, x_idx=x_idx, y_idx=y_idx)
-                if child_overlay is not None:
-                    gate_overlays.append(child_overlay)
 
         displayed_count, total_count = self.plot_panel.plot_scatter(
             x,
@@ -1070,7 +1115,7 @@ class MainWindow(QMainWindow):
         if population_mask is None:
             return
 
-        raw_x = sample.events[population_mask, x_idx]
+        raw_x = sample.effective_events[population_mask, x_idx]
         x_scale, _ = self.inspector_panel.current_scales()
         x = apply_scale(raw_x, x_scale)
         x = x[np.isfinite(x)]
@@ -1091,10 +1136,18 @@ class MainWindow(QMainWindow):
                 self.statusBar().showMessage("No plottable events under current axis scales", 4000)
             return
 
+        current_name = self.current_population_name()
+        children = self._children_of_population(current_name)
+
+        if self.inspector_panel.show_gate_overlays_enabled():
+            for child_gate in children:
+                child_gate_overlay = self._histogram_gate_overlay_for_gate(child_gate, x_idx=x_idx)
+                if child_gate_overlay is not None:
+                    histogram_gate_overlays.append(child_gate_overlay)
+
         if self.inspector_panel.show_subpopulations_enabled():
-            current_name = self.current_population_name()
-            for child_gate in self._children_of_population(current_name):
-                child_values = apply_scale(sample.events[child_gate.full_mask, x_idx], x_scale)
+            for child_gate in children:
+                child_values = apply_scale(sample.effective_events[child_gate.full_mask, x_idx], x_scale)
                 child_values = child_values[np.isfinite(child_values)]
                 if len(child_values) > 0:
                     histogram_subpopulation_overlays.append(
@@ -1104,9 +1157,6 @@ class MainWindow(QMainWindow):
                             label=child_gate.name,
                         )
                     )
-                child_gate_overlay = self._histogram_gate_overlay_for_gate(child_gate, x_idx=x_idx)
-                if child_gate_overlay is not None:
-                    histogram_gate_overlays.append(child_gate_overlay)
 
         displayed_count, total_count = self.plot_panel.plot_histogram(
             x,
@@ -1304,8 +1354,8 @@ class MainWindow(QMainWindow):
             return
 
         x_scale, y_scale = self.inspector_panel.current_scales()
-        x = apply_scale(sample.events[:, x_idx], x_scale)
-        y = apply_scale(sample.events[:, y_idx], y_scale)
+        x = apply_scale(sample.effective_events[:, x_idx], x_scale)
+        y = apply_scale(sample.effective_events[:, y_idx], y_scale)
 
         x_min, x_max, y_min, y_max = bounds
         full_mask = rectangle_mask_from_parent(
@@ -1383,8 +1433,8 @@ class MainWindow(QMainWindow):
             return
 
         x_scale, y_scale = self.inspector_panel.current_scales()
-        x = apply_scale(sample.events[:, x_idx], x_scale)
-        y = apply_scale(sample.events[:, y_idx], y_scale)
+        x = apply_scale(sample.effective_events[:, x_idx], x_scale)
+        y = apply_scale(sample.effective_events[:, y_idx], y_scale)
 
         full_mask = polygon_mask_from_parent(
             x,
@@ -1455,8 +1505,8 @@ class MainWindow(QMainWindow):
             return
 
         x_scale, y_scale = self.inspector_panel.current_scales()
-        x = apply_scale(sample.events[:, x_idx], x_scale)
-        y = apply_scale(sample.events[:, y_idx], y_scale)
+        x = apply_scale(sample.effective_events[:, x_idx], x_scale)
+        y = apply_scale(sample.effective_events[:, y_idx], y_scale)
 
         center_x, center_y, radius_x, radius_y = geometry
         full_mask = circle_mask_from_parent(
@@ -1536,7 +1586,7 @@ class MainWindow(QMainWindow):
             return
 
         x_scale, _ = self.inspector_panel.current_scales()
-        x = apply_scale(sample.events[:, x_idx], x_scale)
+        x = apply_scale(sample.effective_events[:, x_idx], x_scale)
 
         x_min, x_max = bounds
         full_mask = range_mask_from_parent(
@@ -1842,8 +1892,8 @@ class MainWindow(QMainWindow):
             if bounds is None:
                 return
             x_min, x_max, y_min, y_max = bounds
-            x = apply_scale(sample.events[:, gate.x_channel_index], gate.x_scale)
-            y = apply_scale(sample.events[:, gate.y_channel_index], gate.y_scale)
+            x = apply_scale(sample.effective_events[:, gate.x_channel_index], gate.x_scale)
+            y = apply_scale(sample.effective_events[:, gate.y_channel_index], gate.y_scale)
             full_mask = rectangle_mask_from_parent(
                 x, y, parent_mask, x_min=x_min, x_max=x_max, y_min=y_min, y_max=y_max
             )
@@ -1855,8 +1905,8 @@ class MainWindow(QMainWindow):
             vertices = self.plot_panel.polygon_roi_points()
             if not vertices or len(vertices) < 3:
                 return
-            x = apply_scale(sample.events[:, gate.x_channel_index], gate.x_scale)
-            y = apply_scale(sample.events[:, gate.y_channel_index], gate.y_scale)
+            x = apply_scale(sample.effective_events[:, gate.x_channel_index], gate.x_scale)
+            y = apply_scale(sample.effective_events[:, gate.y_channel_index], gate.y_scale)
             full_mask = polygon_mask_from_parent(x, y, parent_mask, vertices)
             gate.vertices = [(float(px), float(py)) for px, py in vertices]
         elif isinstance(gate, CircleGate):
@@ -1864,8 +1914,8 @@ class MainWindow(QMainWindow):
             if geometry is None:
                 return
             center_x, center_y, radius_x, radius_y = geometry
-            x = apply_scale(sample.events[:, gate.x_channel_index], gate.x_scale)
-            y = apply_scale(sample.events[:, gate.y_channel_index], gate.y_scale)
+            x = apply_scale(sample.effective_events[:, gate.x_channel_index], gate.x_scale)
+            y = apply_scale(sample.effective_events[:, gate.y_channel_index], gate.y_scale)
             full_mask = circle_mask_from_parent(
                 x,
                 y,
@@ -1886,7 +1936,7 @@ class MainWindow(QMainWindow):
             if bounds is None:
                 return
             x_min, x_max = bounds
-            x = apply_scale(sample.events[:, gate.channel_index], gate.x_scale)
+            x = apply_scale(sample.effective_events[:, gate.channel_index], gate.x_scale)
             full_mask = range_mask_from_parent(x, parent_mask, x_min=x_min, x_max=x_max)
             gate.x_min = min(x_min, x_max)
             gate.x_max = max(x_min, x_max)
@@ -1938,19 +1988,19 @@ class MainWindow(QMainWindow):
             parent_count = int(p_mask.sum())
 
             if isinstance(gate, RectangleGate):
-                x = apply_scale(sample.events[:, gate.x_channel_index], gate.x_scale)
-                y = apply_scale(sample.events[:, gate.y_channel_index], gate.y_scale)
+                x = apply_scale(sample.effective_events[:, gate.x_channel_index], gate.x_scale)
+                y = apply_scale(sample.effective_events[:, gate.y_channel_index], gate.y_scale)
                 mask = rectangle_mask_from_parent(
                     x, y, p_mask, x_min=gate.x_min, x_max=gate.x_max,
                     y_min=gate.y_min, y_max=gate.y_max,
                 )
             elif isinstance(gate, PolygonGate):
-                x = apply_scale(sample.events[:, gate.x_channel_index], gate.x_scale)
-                y = apply_scale(sample.events[:, gate.y_channel_index], gate.y_scale)
+                x = apply_scale(sample.effective_events[:, gate.x_channel_index], gate.x_scale)
+                y = apply_scale(sample.effective_events[:, gate.y_channel_index], gate.y_scale)
                 mask = polygon_mask_from_parent(x, y, p_mask, gate.vertices)
             elif isinstance(gate, CircleGate):
-                x = apply_scale(sample.events[:, gate.x_channel_index], gate.x_scale)
-                y = apply_scale(sample.events[:, gate.y_channel_index], gate.y_scale)
+                x = apply_scale(sample.effective_events[:, gate.x_channel_index], gate.x_scale)
+                y = apply_scale(sample.effective_events[:, gate.y_channel_index], gate.y_scale)
                 rx = gate.radius_x if gate.radius_x is not None else gate.radius
                 ry = gate.radius_y if gate.radius_y is not None else gate.radius
                 mask = circle_mask_from_parent(
@@ -1959,7 +2009,7 @@ class MainWindow(QMainWindow):
                     radius=gate.radius, radius_x=rx, radius_y=ry,
                 )
             elif isinstance(gate, RangeGate):
-                x = apply_scale(sample.events[:, gate.channel_index], gate.x_scale)
+                x = apply_scale(sample.effective_events[:, gate.channel_index], gate.x_scale)
                 mask = range_mask_from_parent(x, p_mask, x_min=gate.x_min, x_max=gate.x_max)
             else:
                 continue
@@ -2140,7 +2190,7 @@ class MainWindow(QMainWindow):
 
         population_name, population_mask, parent_mask = population_selection
         channel_name = self.current_sample.channel_label(channel_index)
-        channel_values = self.current_sample.events[population_mask, channel_index]
+        channel_values = self.current_sample.effective_events[population_mask, channel_index]
         statistics = calculate_population_statistics(
             channel_values,
             population_mask,
@@ -2288,7 +2338,7 @@ class MainWindow(QMainWindow):
                         )
                         if ch_index is None:
                             continue
-                        ch_values = sample.events[pop_mask, ch_index]
+                        ch_values = sample.effective_events[pop_mask, ch_index]
                         for stat in calculate_population_statistics(
                             ch_values,
                             pop_mask,
@@ -2748,6 +2798,7 @@ class MainWindow(QMainWindow):
             self._sample_table_window.close()
             self._sample_table_window = None
 
+        self._recompute_all_compensation()
         self._sync_from_workspace()
         self._refresh_available_groups()
         self._refresh_sample_list(select_active=True)

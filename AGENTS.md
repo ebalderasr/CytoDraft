@@ -39,6 +39,21 @@ The first milestone is a robust MVP that can:
 - Avoid implementing advanced FlowJo compatibility in the MVP.
 - Prefer JSON workspace first; interoperability can come later.
 
+## Documentation maintenance (MANDATORY)
+
+The `docs/` folder is the single source of truth for any developer or AI agent picking up this project. Every non-trivial code change must be reflected in the relevant doc file in the same commit or PR. Specifically:
+
+| What changed | Which doc to update |
+|---|---|
+| New module, renamed file, or changed layering | `docs/architecture.md` |
+| New feature started, completed, or scoped out | `docs/requirements_mvp.md` (update the status symbol and notes) |
+| UI layout, new window, or changed interaction | `docs/ux_notes.md` |
+| Change to product scope or goals | `docs/product_vision.md` |
+
+**The compensation feature** (`requirements_mvp.md` line marked 🔶) is the main pending item. When it is wired in, update the status to ✅ and remove the "What remains for a complete MVP" entry for it.
+
+Do not leave docs stale. A doc that describes old behavior is worse than no doc.
+
 ## Safe workflow
 - Before major edits, inspect the relevant files.
 - When a task is large, propose a short plan in the response.

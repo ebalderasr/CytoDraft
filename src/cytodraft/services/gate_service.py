@@ -74,8 +74,8 @@ class GateService:
         if isinstance(gate, RectangleGate):
             x_idx = self._resolve_channel_index(sample, gate.x_channel_index, gate.x_label)
             y_idx = self._resolve_channel_index(sample, gate.y_channel_index, gate.y_label)
-            x = apply_scale(sample.events[:, x_idx], gate.x_scale)
-            y = apply_scale(sample.events[:, y_idx], gate.y_scale)
+            x = apply_scale(sample.effective_events[:, x_idx], gate.x_scale)
+            y = apply_scale(sample.effective_events[:, y_idx], gate.y_scale)
             full_mask = rectangle_mask_from_parent(
                 x,
                 y,
@@ -108,8 +108,8 @@ class GateService:
         if isinstance(gate, PolygonGate):
             x_idx = self._resolve_channel_index(sample, gate.x_channel_index, gate.x_label)
             y_idx = self._resolve_channel_index(sample, gate.y_channel_index, gate.y_label)
-            x = apply_scale(sample.events[:, x_idx], gate.x_scale)
-            y = apply_scale(sample.events[:, y_idx], gate.y_scale)
+            x = apply_scale(sample.effective_events[:, x_idx], gate.x_scale)
+            y = apply_scale(sample.effective_events[:, y_idx], gate.y_scale)
             full_mask = polygon_mask_from_parent(
                 x,
                 y,
@@ -136,8 +136,8 @@ class GateService:
         if isinstance(gate, CircleGate):
             x_idx = self._resolve_channel_index(sample, gate.x_channel_index, gate.x_label)
             y_idx = self._resolve_channel_index(sample, gate.y_channel_index, gate.y_label)
-            x = apply_scale(sample.events[:, x_idx], gate.x_scale)
-            y = apply_scale(sample.events[:, y_idx], gate.y_scale)
+            x = apply_scale(sample.effective_events[:, x_idx], gate.x_scale)
+            y = apply_scale(sample.effective_events[:, y_idx], gate.y_scale)
             full_mask = circle_mask_from_parent(
                 x,
                 y,
@@ -170,7 +170,7 @@ class GateService:
             )
 
         x_idx = self._resolve_channel_index(sample, gate.channel_index, gate.channel_label)
-        x = apply_scale(sample.events[:, x_idx], gate.x_scale)
+        x = apply_scale(sample.effective_events[:, x_idx], gate.x_scale)
         full_mask = range_mask_from_parent(
             x,
             parent_mask,
@@ -261,6 +261,66 @@ class GateService:
                 return index
 
         raise ValueError(f"Channel '{expected_label}' is not available in sample {sample.file_name}.")
+
+    def recompute_all_gate_masks(
+        self,
+        sample: SampleData,
+        gates: list[GateModel],
+    ) -> None:
+        """Recompute full_mask and counts for every gate in *gates* in topological order.
+
+        Called after the compensation matrix changes so that gate masks reflect the
+        current effective_events (compensated or raw).  Gate geometry (boundaries,
+        vertices, …) is not modified — only the masks and derived counts.
+        """
+        total_count = sample.event_count
+        computed_masks: dict[str, np.ndarray] = {
+            "All events": np.ones(total_count, dtype=bool)
+        }
+
+        for gate in gates:
+            parent_mask = computed_masks.get(
+                gate.parent_name,
+                np.ones(total_count, dtype=bool),
+            )
+            parent_count = int(parent_mask.sum())
+            events = sample.effective_events
+
+            if isinstance(gate, RectangleGate):
+                x = apply_scale(events[:, gate.x_channel_index], gate.x_scale)
+                y = apply_scale(events[:, gate.y_channel_index], gate.y_scale)
+                mask = rectangle_mask_from_parent(
+                    x, y, parent_mask,
+                    x_min=gate.x_min, x_max=gate.x_max,
+                    y_min=gate.y_min, y_max=gate.y_max,
+                )
+            elif isinstance(gate, PolygonGate):
+                x = apply_scale(events[:, gate.x_channel_index], gate.x_scale)
+                y = apply_scale(events[:, gate.y_channel_index], gate.y_scale)
+                mask = polygon_mask_from_parent(x, y, parent_mask, gate.vertices)
+            elif isinstance(gate, CircleGate):
+                x = apply_scale(events[:, gate.x_channel_index], gate.x_scale)
+                y = apply_scale(events[:, gate.y_channel_index], gate.y_scale)
+                rx = gate.radius_x if gate.radius_x is not None else gate.radius
+                ry = gate.radius_y if gate.radius_y is not None else gate.radius
+                mask = circle_mask_from_parent(
+                    x, y, parent_mask,
+                    center_x=gate.center_x, center_y=gate.center_y,
+                    radius=gate.radius, radius_x=rx, radius_y=ry,
+                )
+            elif isinstance(gate, RangeGate):
+                x = apply_scale(events[:, gate.channel_index], gate.x_scale)
+                mask = range_mask_from_parent(x, parent_mask, x_min=gate.x_min, x_max=gate.x_max)
+            else:
+                computed_masks[gate.name] = gate.full_mask
+                continue
+
+            cnt = int(mask.sum())
+            gate.full_mask = mask
+            gate.event_count = cnt
+            gate.percentage_parent = self._percentage(cnt, parent_count)
+            gate.percentage_total = self._percentage(cnt, total_count)
+            computed_masks[gate.name] = mask
 
     @staticmethod
     def _parent_mask(

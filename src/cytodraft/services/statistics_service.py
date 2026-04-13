@@ -73,7 +73,7 @@ class StatisticsService:
             )
             if channel_index is None:
                 return None
-            values = sample.events[population_mask, channel_index]
+            values = sample.effective_events[population_mask, channel_index]
         else:
             values = np.empty(0)
 

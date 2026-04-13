@@ -102,6 +102,7 @@ class CytometryPlotWidget(QWidget):
         self.plot_widget.setMenuEnabled(False)
         self.plot_widget.setAntialiasing(True)
         self.plot_widget.getPlotItem().getViewBox().setBorder(pg.mkPen("#d6e0ea"))
+        self.plot_widget.getPlotItem().getViewBox().setMouseEnabled(x=False, y=False)
         self.plot_widget.getAxis("bottom").setPen(pg.mkPen("#94a3b8"))
         self.plot_widget.getAxis("left").setPen(pg.mkPen("#94a3b8"))
         self.plot_widget.getAxis("bottom").setTextPen(pg.mkPen("#475569"))
@@ -368,11 +369,19 @@ class CytometryPlotWidget(QWidget):
         y_min: float | None,
         y_max: float | None,
     ) -> None:
-        if x_min is not None and x_max is not None and x_max > x_min:
-            self.plot_widget.setXRange(x_min, x_max, padding=0.0)
+        # Use current view bounds as fallback so a single typed value still works.
+        vb = self.plot_widget.getPlotItem().getViewBox()
+        cur_x, cur_y = vb.viewRange()
 
-        if y_min is not None and y_max is not None and y_max > y_min:
-            self.plot_widget.setYRange(y_min, y_max, padding=0.0)
+        _x_min = x_min if x_min is not None else cur_x[0]
+        _x_max = x_max if x_max is not None else cur_x[1]
+        if _x_max > _x_min:
+            self.plot_widget.setXRange(_x_min, _x_max, padding=0.0)
+
+        _y_min = y_min if y_min is not None else cur_y[0]
+        _y_max = y_max if y_max is not None else cur_y[1]
+        if _y_max > _y_min:
+            self.plot_widget.setYRange(_y_min, _y_max, padding=0.0)
 
     def auto_range(self) -> None:
         self.plot_widget.autoRange()

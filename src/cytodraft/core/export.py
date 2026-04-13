@@ -23,7 +23,7 @@ def export_masked_events_to_csv(
 
     _validate_mask(sample, mask)
 
-    selected_events = sample.events[mask]
+    selected_events = sample.effective_events[mask]
     selected_indices = [i for i, keep in enumerate(mask) if keep]
 
     data = {
@@ -48,7 +48,7 @@ def export_masked_events_to_fcs(
 
     _validate_mask(sample, mask)
 
-    selected_events = sample.events[mask]
+    selected_events = sample.effective_events[mask]
     flattened_events = selected_events.astype("float32", copy=False).ravel(order="C").tolist()
     channel_names = [channel.pnn.strip() or f"Channel {channel.number}" for channel in sample.channels]
     opt_channel_names = [channel.pns.strip() or None for channel in sample.channels]

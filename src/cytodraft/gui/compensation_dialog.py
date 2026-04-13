@@ -32,6 +32,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFrame,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
@@ -158,173 +159,373 @@ class _MatrixTable(QTableWidget):
         self.matrix_changed.emit()
 
 
-# ── Scatter verification pane ──────────────────────────────────────────────────
+# ── Pairwise scatter grid ──────────────────────────────────────────────────────
 
-class _ScatterPane(QWidget):
+_MAX_GRID_CHANNELS = 10   # cap to avoid rendering too many plots at once
+_MAX_PTS_PER_PLOT = 4_000  # subsampling limit per plot
+
+
+class _PairScatterGrid(QWidget):
+    """N×N grid of scatter plots for visualising spillover and compensation quality.
+
+    Layout follows the spillover matrix convention:
+      - Columns  = source fluorochrome (X axis)
+      - Rows     = detector that receives spillover (Y axis)
+      - Diagonal = channel name label
+
+    For any off-diagonal cell (r, c):
+      - Gray dots  = raw (uncompensated) events
+      - Blue dots  = compensated events
+      - Correctly compensated: events should cluster near the X axis
+        (detector r reads ~0 when only fluorochrome c is present)
+
+    The grid updates in-place when the matrix changes but the sample and
+    channel list stay the same, avoiding a full widget rebuild.
+    """
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._workspace: WorkspaceState | None = None
         self._spill_channels: list[str] = []
         self._spill_matrix: np.ndarray | None = None
-        self._comp_events: np.ndarray | None = None
+
+        # Cached data for in-place updates
+        self._cached_sample_idx: int | None = None
+        self._cached_channels: list[str] = []
+        self._fluoro_indices: list[int] | None = None
+        self._sel: np.ndarray | None = None        # subsample index array
+        self._raw_sub: np.ndarray | None = None    # raw events, subsampled
+        self._comp_sub: np.ndarray | None = None   # compensated events, subsampled
+
+        # Grid state
+        self._n_grid: int = 0
+        self._raw_items: list[list[pg.ScatterPlotItem | None]] = []
+        self._comp_items: list[list[pg.ScatterPlotItem | None]] = []
+
         self._build_ui()
+
+    # ── Public API (same interface as the old _ScatterPane) ────────────────────
 
     def set_workspace(self, workspace: WorkspaceState) -> None:
         self._workspace = workspace
         self._refresh_sample_combo()
 
     def update_spillover(self, channels: list[str], matrix: np.ndarray) -> None:
-        self._spill_channels = channels
-        self._spill_matrix = matrix
-        self._comp_events = None
-        self._refresh_plot()
+        self._spill_channels = list(channels)
+        self._spill_matrix = matrix.copy()
+
+        sample_idx = self._sample_combo.currentData()
+        same_context = (
+            channels == self._cached_channels
+            and sample_idx == self._cached_sample_idx
+            and self._n_grid > 0
+        )
+        if same_context:
+            self._recompute_comp_sub()
+            self._update_scatter_data()
+        else:
+            self._rebuild_grid()
 
     def clear_spillover(self) -> None:
         self._spill_channels = []
         self._spill_matrix = None
-        self._comp_events = None
-        self._refresh_plot()
+        self._rebuild_grid()
+
+    # ── Build UI ───────────────────────────────────────────────────────────────
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(6)
 
+        # Controls row
         ctrl = QHBoxLayout()
-        ctrl.setSpacing(6)
+        ctrl.setSpacing(8)
 
         ctrl.addWidget(QLabel("Sample:"))
         self._sample_combo = QComboBox()
-        self._sample_combo.setMinimumWidth(180)
+        self._sample_combo.setMinimumWidth(200)
         self._sample_combo.currentIndexChanged.connect(self._on_sample_changed)
         ctrl.addWidget(self._sample_combo)
 
-        ctrl.addWidget(QLabel("X:"))
-        self._x_combo = QComboBox()
-        self._x_combo.setMinimumWidth(120)
-        self._x_combo.currentIndexChanged.connect(self._refresh_plot)
-        ctrl.addWidget(self._x_combo)
-
-        ctrl.addWidget(QLabel("Y:"))
-        self._y_combo = QComboBox()
-        self._y_combo.setMinimumWidth(120)
-        self._y_combo.currentIndexChanged.connect(self._refresh_plot)
-        ctrl.addWidget(self._y_combo)
-
-        self._comp_check = QCheckBox("Compensated")
-        self._comp_check.setChecked(True)
-        self._comp_check.stateChanged.connect(self._refresh_plot)
-
-        self._raw_check = QCheckBox("Raw")
+        self._raw_check = QCheckBox("Show raw (gray)")
         self._raw_check.setChecked(True)
-        self._raw_check.stateChanged.connect(self._refresh_plot)
-
-        ctrl.addWidget(self._comp_check)
+        self._raw_check.toggled.connect(self._on_raw_toggled)
         ctrl.addWidget(self._raw_check)
+
         ctrl.addStretch(1)
+        self._info_lbl = QLabel()
+        self._info_lbl.setStyleSheet("color: #6b7280; font-size: 11px;")
+        ctrl.addWidget(self._info_lbl)
+
         layout.addLayout(ctrl)
 
-        pg.setConfigOptions(antialias=False)
-        self._plot = pg.PlotWidget(background="#fbfcfe")
-        self._plot.showGrid(x=True, y=True, alpha=0.3)
-        self._plot.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        layout.addWidget(self._plot, stretch=1)
+        # Scroll area wrapping the grid of plots
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._grid_container = QWidget()
+        self._grid_layout = QGridLayout(self._grid_container)
+        self._grid_layout.setSpacing(3)
+        self._grid_layout.setContentsMargins(4, 4, 4, 4)
+        scroll.setWidget(self._grid_container)
+        layout.addWidget(scroll, stretch=1)
 
         hint = QLabel(
-            "Correctly compensated: populations should be axis-aligned (no diagonal tilt).  "
-            "Gray = raw · Blue = compensated."
+            "Columns = source fluorochrome (X axis)  ·  Rows = detector (Y axis)  ·  "
+            "Gray = raw  ·  Blue = compensated  ·  "
+            "Well-compensated: blue cloud is vertical / axis-aligned, no diagonal tilt."
         )
         hint.setStyleSheet("color: #6b7280; font-size: 11px;")
         hint.setWordWrap(True)
         layout.addWidget(hint)
 
+    # ── Sample combo ───────────────────────────────────────────────────────────
+
     def _refresh_sample_combo(self) -> None:
+        prev_idx = self._sample_combo.currentData()
         self._sample_combo.blockSignals(True)
         self._sample_combo.clear()
         if self._workspace:
             for i, ws in enumerate(self._workspace.samples):
                 self._sample_combo.addItem(ws.sample_name, i)
+        # Restore previous selection if still valid
+        if prev_idx is not None:
+            for j in range(self._sample_combo.count()):
+                if self._sample_combo.itemData(j) == prev_idx:
+                    self._sample_combo.setCurrentIndex(j)
+                    break
         self._sample_combo.blockSignals(False)
-        self._on_sample_changed()
+        self._rebuild_grid()
 
     def _on_sample_changed(self) -> None:
-        idx = self._sample_combo.currentData()
-        sample = None
-        if idx is not None and self._workspace and idx < len(self._workspace.samples):
-            sample = self._workspace.samples[idx].sample
+        self._rebuild_grid()
 
-        self._comp_events = None
-        for combo in (self._x_combo, self._y_combo):
-            combo.blockSignals(True)
-            combo.clear()
-        if sample:
-            chs = [ch.display_name for ch in sample.channels]
-            self._x_combo.addItems(chs)
-            self._y_combo.addItems(chs)
-            fluoro = sample.fluoro_indices
-            if len(fluoro) >= 2:
-                self._x_combo.setCurrentIndex(fluoro[0])
-                self._y_combo.setCurrentIndex(fluoro[1])
-            elif len(chs) >= 2:
-                self._x_combo.setCurrentIndex(0)
-                self._y_combo.setCurrentIndex(1)
-        for combo in (self._x_combo, self._y_combo):
-            combo.blockSignals(False)
-        self._refresh_plot()
+    # ── Raw/comp visibility toggle (no rebuild needed) ─────────────────────────
 
-    def _refresh_plot(self) -> None:
-        self._plot.clear()
+    def _on_raw_toggled(self, checked: bool) -> None:
+        for row_items in self._raw_items:
+            for item in row_items:
+                if item is not None:
+                    item.setVisible(checked)
+
+    # ── Grid build ─────────────────────────────────────────────────────────────
+
+    def _clear_grid(self) -> None:
+        while self._grid_layout.count():
+            child = self._grid_layout.takeAt(0)
+            if child.widget():
+                child.widget().deleteLater()
+        self._raw_items = []
+        self._comp_items = []
+        self._n_grid = 0
+        self._cached_sample_idx = None
+        self._cached_channels = []
+        self._fluoro_indices = None
+        self._sel = None
+        self._raw_sub = None
+        self._comp_sub = None
+
+    def _rebuild_grid(self) -> None:
+        self._clear_grid()
+
+        if not self._spill_channels or self._spill_matrix is None:
+            self._info_lbl.setText("No spillover matrix loaded.")
+            return
+
         if not self._workspace:
-            return
-        idx = self._sample_combo.currentData()
-        if idx is None or idx >= len(self._workspace.samples):
-            return
-        sample = self._workspace.samples[idx].sample
-        xi, yi = self._x_combo.currentIndex(), self._y_combo.currentIndex()
-        if xi < 0 or yi < 0 or xi == yi:
+            self._info_lbl.setText("No workspace.")
             return
 
+        sample_idx = self._sample_combo.currentData()
+        if sample_idx is None or sample_idx >= len(self._workspace.samples):
+            self._info_lbl.setText("Select a sample above.")
+            return
+
+        sample = self._workspace.samples[sample_idx].sample
+
+        n = min(len(self._spill_channels), _MAX_GRID_CHANNELS)
+        channels = self._spill_channels[:n]
+        matrix = self._spill_matrix[:n, :n]
+
+        indices = resolve_fluoro_indices(channels, sample)
+        if indices is None:
+            self._info_lbl.setText(
+                "Channel names in the matrix don't match this sample's channels. "
+                "Try a different sample."
+            )
+            return
+
+        # Subsample raw events (consistent seed so plots are stable)
         raw = sample.events
         n_events = raw.shape[0]
-        if n_events > _MAX_SCATTER_POINTS:
+        max_pts = min(_MAX_PTS_PER_PLOT, n_events)
+        if n_events > max_pts:
             rng = np.random.default_rng(42)
-            sel = rng.choice(n_events, _MAX_SCATTER_POINTS, replace=False)
+            self._sel = rng.choice(n_events, max_pts, replace=False)
         else:
-            sel = np.arange(n_events)
+            self._sel = np.arange(n_events)
 
-        if self._raw_check.isChecked():
-            self._plot.plot(
-                raw[sel, xi], raw[sel, yi],
-                pen=None, symbol="o", symbolSize=3,
-                symbolBrush=pg.mkBrush(160, 160, 160, 80), symbolPen=None,
+        self._cached_sample_idx = sample_idx
+        self._cached_channels = list(channels)
+        self._fluoro_indices = indices
+        self._raw_sub = raw[self._sel]  # shape (pts, total_channels)
+        self._recompute_comp_sub()
+
+        self._n_grid = n
+        self._raw_items = [[None] * n for _ in range(n)]
+        self._comp_items = [[None] * n for _ in range(n)]
+
+        # Cell size: smaller grids get larger plots
+        cell_size = max(90, min(180, 900 // n))
+
+        show_raw = self._raw_check.isChecked()
+
+        for r in range(n):
+            for c in range(n):
+                plot = self._make_cell_plot(cell_size)
+
+                if r == c:
+                    self._fill_diagonal(plot, channels[r])
+                else:
+                    xi = indices[c]
+                    yi = indices[r]
+                    self._fill_scatter_cell(
+                        plot, r, c, xi, yi,
+                        edge_left=(c == 0),
+                        edge_bottom=(r == n - 1),
+                        ch_x=channels[c],
+                        ch_y=channels[r],
+                        show_raw=show_raw,
+                    )
+
+                self._grid_layout.addWidget(plot, r, c)
+
+        suffix = ""
+        if len(self._spill_channels) > n:
+            suffix = f" (first {n} of {len(self._spill_channels)} channels shown)"
+        self._info_lbl.setText(
+            f"{n}×{n} grid · {len(self._sel):,} events per plot{suffix}"
+        )
+
+    @staticmethod
+    def _make_cell_plot(size: int) -> pg.PlotWidget:
+        plot = pg.PlotWidget(background="#fbfcfe")
+        plot.setFixedSize(size, size)
+        plot.hideButtons()
+        plot.setMenuEnabled(False)
+        plot.showGrid(x=True, y=True, alpha=0.2)
+        for ax in ("left", "bottom", "right", "top"):
+            plot.getAxis(ax).setStyle(tickLength=3, tickTextOffset=2)
+        return plot
+
+    @staticmethod
+    def _fill_diagonal(plot: pg.PlotWidget, label: str) -> None:
+        """Diagonal cell: show channel name, no data."""
+        plot.hideAxis("left")
+        plot.hideAxis("bottom")
+        plot.setBackground("#f3f4f6")
+        text = pg.TextItem(label, color="#374151", anchor=(0.5, 0.5))
+        plot.addItem(text)
+        plot.setXRange(-1, 1, padding=0)
+        plot.setYRange(-1, 1, padding=0)
+        text.setPos(0, 0)
+
+    def _fill_scatter_cell(
+        self,
+        plot: pg.PlotWidget,
+        r: int,
+        c: int,
+        xi: int,
+        yi: int,
+        *,
+        edge_left: bool,
+        edge_bottom: bool,
+        ch_x: str,
+        ch_y: str,
+        show_raw: bool,
+    ) -> None:
+        """Off-diagonal cell: raw + compensated scatter."""
+        if not edge_left:
+            plot.hideAxis("left")
+        else:
+            plot.getAxis("left").setLabel(ch_y, size="7pt")
+
+        if not edge_bottom:
+            plot.hideAxis("bottom")
+        else:
+            plot.getAxis("bottom").setLabel(ch_x, size="7pt")
+
+        raw_item: pg.ScatterPlotItem | None = None
+        comp_item: pg.ScatterPlotItem | None = None
+
+        if self._raw_sub is not None:
+            raw_item = pg.ScatterPlotItem(
+                x=self._raw_sub[:, xi],
+                y=self._raw_sub[:, yi],
+                size=2, pen=None,
+                brush=pg.mkBrush(170, 170, 170, 55),
             )
+            raw_item.setVisible(show_raw)
+            plot.addItem(raw_item)
 
-        if self._comp_check.isChecked():
-            comp = self._get_compensated(sample)
-            src = comp if comp is not None else raw
-            self._plot.plot(
-                src[sel, xi], src[sel, yi],
-                pen=None, symbol="o", symbolSize=3,
-                symbolBrush=pg.mkBrush(37, 99, 235, 100), symbolPen=None,
+        if self._comp_sub is not None:
+            comp_item = pg.ScatterPlotItem(
+                x=self._comp_sub[:, xi],
+                y=self._comp_sub[:, yi],
+                size=2, pen=None,
+                brush=pg.mkBrush(37, 99, 235, 90),
             )
+            plot.addItem(comp_item)
 
-        chs = sample.channels
-        self._plot.setLabel("bottom", chs[xi].display_name if xi < len(chs) else "")
-        self._plot.setLabel("left", chs[yi].display_name if yi < len(chs) else "")
+        self._raw_items[r][c] = raw_item
+        self._comp_items[r][c] = comp_item
 
-    def _get_compensated(self, sample) -> np.ndarray | None:
-        if self._spill_matrix is None or not self._spill_channels:
-            return None
-        if self._comp_events is not None:
-            return self._comp_events
-        indices = resolve_fluoro_indices(self._spill_channels, sample)
-        if indices is None:
-            return None
+    # ── In-place compensation update ───────────────────────────────────────────
+
+    def _recompute_comp_sub(self) -> None:
+        """Recompute compensated subsampled events using the current matrix."""
+        if (
+            self._fluoro_indices is None
+            or self._spill_matrix is None
+            or self._cached_sample_idx is None
+            or self._workspace is None
+            or self._sel is None
+        ):
+            self._comp_sub = None
+            return
+
+        if self._cached_sample_idx >= len(self._workspace.samples):
+            self._comp_sub = None
+            return
+
+        n = len(self._cached_channels)
+        matrix = self._spill_matrix[:n, :n]
+        raw = self._workspace.samples[self._cached_sample_idx].sample.events
         try:
-            self._comp_events = apply_compensation(sample.events, self._spill_matrix, indices)
+            comp_full = apply_compensation(raw, matrix, self._fluoro_indices)
+            self._comp_sub = comp_full[self._sel]
         except Exception:
-            return None
-        return self._comp_events
+            self._comp_sub = None
+
+    def _update_scatter_data(self) -> None:
+        """Update compensated scatter item data in-place (no widget rebuild)."""
+        n = self._n_grid
+        for r in range(n):
+            for c in range(n):
+                if r == c:
+                    continue
+                xi = self._fluoro_indices[c]
+                yi = self._fluoro_indices[r]
+                item = self._comp_items[r][c]
+                if item is not None:
+                    if self._comp_sub is not None:
+                        item.setData(
+                            x=self._comp_sub[:, xi],
+                            y=self._comp_sub[:, yi],
+                        )
+                    else:
+                        item.setData(x=np.array([]), y=np.array([]))
 
 
 # ── Control detail / setup panel (right pane) ──────────────────────────────────
@@ -965,10 +1166,10 @@ class CompensationWindow(QDialog):
         self._matrix_tab.matrix_updated.connect(self._on_matrix_updated)
         self._tabs.addTab(self._matrix_tab, "Spillover matrix")
 
-        # Tab 3: Verification scatter
-        self._scatter = _ScatterPane()
+        # Tab 3: Pairwise scatter grid
+        self._scatter = _PairScatterGrid()
         self._scatter.set_workspace(self.workspace)
-        self._tabs.addTab(self._scatter, "Scatter verification")
+        self._tabs.addTab(self._scatter, "Pairwise scatter")
 
         splitter.addWidget(self._tabs)
         splitter.setStretchFactor(0, 2)
